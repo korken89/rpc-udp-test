@@ -1,0 +1,77 @@
+[package]
+# TODO(1) fix `authors` and `name` if you didn't use `cargo-generate`
+authors = ["Emil Fresk <emil.fresk@gmail.com>"]
+name = "rpc-testing"
+edition = "2021"
+version = "0.1.0"
+
+[dependencies]
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+
+defmt = { version = "0.3", features = ["encoding-rzcobs"] }
+defmt-rtt = "0.4"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+rtic = { git = "https://github.com/rtic-rs/rtic.git", branch = "feature/stable-support", version = "2", features = ["thumbv7-backend"] }
+rtic-monotonics = { version = "1", features = ["cortex-m-systick", "systick-64bit", "embedded-hal-async"] }
+rtic-sync = "1"
+rtic-common = "1"
+
+heapless = { version = "0.7.16", features = ["defmt-impl"] }
+static_cell = "2"
+
+embassy-stm32 = { version = "0.1.0", features = ["defmt", "stm32f407ze", "exti", "unstable-pac", "time-driver-any"] }
+embassy-net = { version = "0.4.0", features = ["defmt", "tcp", "udp", "dns", "dhcpv4", "medium-ethernet"] }
+embassy-time = { version = "0.3.0", features = ["defmt", "tick-hz-32_768", "generic-queue"] }
+
+
+rand_core = "0.6.4"
+embedded-io = { version = "0.6.0" }
+embedded-io-async = { version = "0.6.1" }
+futures = { version = "0.3.17", default-features = false, features = ["async-await"] }
+
+[features]
+other = []
+
+[[bin]]
+name = "app"
+test = false
+bench = false
+
+# cargo build/run
+[profile.dev]
+codegen-units = 1
+debug = 2
+debug-assertions = true # <-
+incremental = false
+opt-level = "s" # <-
+overflow-checks = true # <-
+
+# cargo test
+[profile.test]
+codegen-units = 1
+debug = 2
+debug-assertions = true # <-
+incremental = false
+opt-level = "s" # <-
+overflow-checks = true # <-
+
+# cargo build/run --release
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false # <-
+incremental = false
+lto = 'fat'
+opt-level = "s" # <-
+overflow-checks = false # <-
+
+# cargo test --release
+[profile.bench]
+codegen-units = 1
+debug = 2
+debug-assertions = false # <-
+incremental = false
+lto = 'fat'
+opt-level = "s" # <-
+overflow-checks = false # <-
