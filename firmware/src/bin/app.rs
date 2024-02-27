@@ -3,13 +3,11 @@
 #![allow(incomplete_features)]
 
 use embassy_net::{
-    tcp::TcpSocket,
     udp::{PacketMetadata, UdpSocket},
     Ipv4Address,
 };
-use embedded_io_async::Write;
 use rtic_monotonics::{
-    systick::{fugit::MicrosDurationU64, Systick},
+    systick::{fugit::MicrosDurationU64, ExtU64, Systick},
     Monotonic,
 };
 
@@ -21,7 +19,7 @@ defmt::timestamp!("{=u64:us}", {
 
 #[rtic::app(device = embassy_stm32::pac, dispatchers = [I2C1_EV, I2C1_ER, I2C2_EV, I2C2_ER], peripherals = false)]
 mod app {
-    use crate::{block_ethernet_high_prio, block_ethernet_same_prio, handle_stack, run_tcp};
+    use crate::{handle_stack, run_comms};
     use rpc_testing::bsp::{self, NetworkStack};
 
     #[shared]
@@ -39,9 +37,7 @@ mod app {
         let network_stack = bsp::init(cx.core);
 
         handle_stack::spawn().ok();
-        run_tcp::spawn().ok();
-        // block_ethernet_high_prio::spawn().ok();
-        block_ethernet_same_prio::spawn().ok();
+        run_comms::spawn().ok();
 
         (Shared { network_stack }, Local {})
     }
@@ -51,32 +47,8 @@ mod app {
         async fn handle_stack(_: handle_stack::Context);
 
         #[task(shared = [&network_stack])]
-        async fn run_tcp(_: run_tcp::Context);
+        async fn run_comms(_: run_comms::Context);
 
-        #[task(priority = 1)]
-        async fn block_ethernet_high_prio(_: block_ethernet_high_prio::Context);
-
-        #[task]
-        async fn block_ethernet_same_prio(_: block_ethernet_same_prio::Context);
-    }
-}
-
-pub async fn block_ethernet_high_prio(_: app::block_ethernet_high_prio::Context<'_>) -> ! {
-    loop {
-        Systick::delay(2.millis()).await;
-
-        // Block for 20% of CPU time.
-        let start = Systick::now();
-        while start + 6.millis() > Systick::now() {}
-    }
-}
-
-pub async fn block_ethernet_same_prio(_: app::block_ethernet_same_prio::Context<'_>) -> ! {
-    loop {
-        Systick::delay(1.millis()).await;
-
-        let start = Systick::now();
-        while start + 5.millis() > Systick::now() {}
     }
 }
 
@@ -84,10 +56,38 @@ pub async fn handle_stack(cx: app::handle_stack::Context<'_>) -> ! {
     cx.shared.network_stack.run().await
 }
 
-use rtic_monotonics::systick::ExtU64;
+// pub async fn dispatcher(innie: Innie, outie: OutieRef, mut led: Output<'static, AnyPin>) {
+//     loop {
+//         let msg = innie.receive().await;
 
-pub async fn run_tcp(cx: app::run_tcp::Context<'_>) -> ! {
-    let stack = cx.shared.network_stack;
+//         let Some(whbody) = WhBody::try_from(&msg) else {
+//             continue;
+//         };
+
+//         match whbody.wh.key {
+//             icd::Uptime::REQ_KEY => {
+//                 // This has no request body
+//                 handle_uptime(outie, whbody.wh.seq_no).await;
+//             }
+//             icd::ResetToBootloader::REQ_KEY => {
+//                 handle_reset_bootload(outie, whbody.wh.seq_no).await;
+//             }
+//             icd::Ident::REQ_KEY => {
+//                 if let Ok(time_ms) =
+//                     postcard::from_bytes::<<icd::Ident as Endpoint>::Request>(whbody.body)
+//                 {
+//                     handle_ident(outie, whbody.wh.seq_no, time_ms, &mut led).await;
+//                 }
+//             }
+//             _ => {
+//                 // oops
+//             }
+//         }
+//     }
+// }
+
+pub async fn run_comms(cx: app::run_comms::Context<'_>) -> ! {
+    let stack = *cx.shared.network_stack;
 
     // Ensure DHCP configuration is up before trying connect
     stack.wait_config_up().await;
@@ -119,9 +119,14 @@ pub async fn run_tcp(cx: app::run_tcp::Context<'_>) -> ! {
 
         loop {
             socket.send_to(b"hello!\n", remote_endpoint).await.unwrap();
-            let (n, ep) = socket.recv_from(&mut buf).await.unwrap();
-            if let Ok(s) = core::str::from_utf8(&buf[..n]) {
-                defmt::info!("rxd from {}: {}", ep, s);
+            if let Ok(Ok((n, ep))) =
+                Systick::timeout_after(3.secs(), socket.recv_from(&mut buf)).await
+            {
+                if let Ok(s) = core::str::from_utf8(&buf[..n]) {
+                    defmt::info!("rxd from {}: {}", ep, s);
+                }
+            } else {
+                defmt::warn!("No response from {}", remote_endpoint);
             }
         }
 

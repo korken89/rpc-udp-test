@@ -1,11 +1,14 @@
+use core::iter::Empty;
 use core::ptr::addr_of_mut;
+use core::str::FromStr;
 
-use embassy_net::{Stack, StackResources};
+use embassy_net::{DhcpConfig, Stack, StackResources};
 use embassy_stm32::eth::{Ethernet, PacketQueue};
 use embassy_stm32::peripherals::ETH;
 use embassy_stm32::rng::Rng;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::{bind_interrupts, eth, peripherals, rng, Config};
+use heapless::String;
 use rand_core::RngCore;
 use rtic_monotonics::systick::Systick;
 use static_cell::StaticCell;
@@ -72,12 +75,13 @@ pub fn init(c: cortex_m::Peripherals) -> NetworkStack {
         mac_addr,
     );
 
-    let config = embassy_net::Config::dhcpv4(Default::default());
-    //let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
-    //    address: Ipv4Cidr::new(Ipv4Address::new(10, 42, 0, 61), 24),
-    //    dns_servers: Vec::new(),
-    //    gateway: Some(Ipv4Address::new(10, 42, 0, 1)),
-    //});
+    let config = {
+        let mut c = DhcpConfig::default();
+        let mut hostname = String::from_str("rpc-").unwrap();
+        hostname.push_str(embassy_stm32::uid::uid_hex()).unwrap();
+        c.hostname = Some(hostname);
+        embassy_net::Config::dhcpv4(c)
+    };
 
     // Generate random seed.
     let mut rng = Rng::new(p.RNG, Irqs);
