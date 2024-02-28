@@ -3,13 +3,15 @@
 use log::*;
 use once_cell::sync::{Lazy, OnceCell};
 use rustc_hash::FxHashMap;
-use std::net::IpAddr;
+use std::{net::IpAddr, time::Duration};
 use tokio::{
     net::UdpSocket,
     sync::{
+        broadcast,
         mpsc::{channel, error::TrySendError, Receiver, Sender},
         RwLock,
     },
+    time::timeout,
 };
 
 use rpc_definition::{
@@ -19,6 +21,13 @@ use rpc_definition::{
     },
     wire_error::{FatalError, ERROR_PATH},
 };
+
+/// The new state of a connection.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Connection {
+    New(IpAddr),
+    Closed(IpAddr),
+}
 
 /// Global singleton for the UDP socket.
 ///
@@ -35,7 +44,7 @@ pub async fn udp_listener() -> anyhow::Result<()> {
     let mut wire_workers = FxHashMap::default();
     wire_workers.reserve(1000);
 
-    info!("Waiting for connections...");
+    debug!("Waiting for connections...");
 
     loop {
         let mut rx_buf = Vec::with_capacity(2048);
@@ -89,9 +98,13 @@ pub(crate) static API_CLIENT: Lazy<RwLock<FxHashMap<IpAddr, HostClient<FatalErro
         })
     });
 
+/// Global subscription to signal a new connection is available.
+pub(crate) static CONNECTION_SUBSCRIBER: Lazy<broadcast::Sender<Connection>> =
+    Lazy::new(|| broadcast::channel(16).0);
+
 /// This handles incoming packets from a specific IP.
 async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
-    info!("{ip}: Registered new connection, starting handshake");
+    debug!("{ip}: Registered new connection, starting handshake");
 
     // TODO: This is where we should perform ECDH handshake & authenticity verification of a device.
     // let secure_channel = match perform_handshake(ip, packet_recv).await {
@@ -103,11 +116,11 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
     // };
 
     // TODO: This is where we should perform version checks and firmware update devices before
-    // accepting them as active. Most likely they will restart and this connection will be closed
+    // accepting them as active. Most likely they will restart, and this connection will be closed
     // and recreated as soon as the device comes back updated and can pass this check.
     // match check_version_and_maybe_update(&mut packet_recv) {
     //     FirmwareUpdateStatus::NeedsUpdating => {
-    //         info!("{ip}: Firmware needs updating, performing firmware update");
+    //         debug!("{ip}: Firmware needs updating, performing firmware update");
     //
     //         start_firmware_update(&ip).await;
     //
@@ -115,11 +128,11 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
     //         return;
     //     }
     //     FirmwareUpdateStatus::Valid => {
-    //         info!("{ip}: Firmware valid, continuing");
+    //         debug!("{ip}: Firmware valid, continuing");
     //     }
     // }
 
-    info!("{ip}: Connection active");
+    debug!("{ip}: Connection active");
 
     // We have one host client per connection.
     let (hostclient, wirecontext) = HostClient::<FatalError>::new_manual(ERROR_PATH, 10);
@@ -128,6 +141,8 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
     {
         API_CLIENT.write().await.insert(ip, hostclient);
     }
+
+    let _ = CONNECTION_SUBSCRIBER.send(Connection::New(ip));
 
     // Start handling of all I/O.
     let WireContext {
@@ -161,8 +176,14 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
                     break;
                 }
             }
-            packet = packet_recv.recv() => {
+            packet = timeout(Duration::from_secs(5), packet_recv.recv()) => {
                 // Make sure the UDP RX worker is still alive.
+                let Ok(packet) = packet else {
+                    debug!("{ip}: Connection closed.");
+                    let _ = CONNECTION_SUBSCRIBER.send(Connection::Closed(ip));
+                    break;
+                };
+
                 let Some(packet) = packet else {
                     break;
                 };

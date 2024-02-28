@@ -4,9 +4,10 @@
 //! Note: This app uses IP as identifier for each device, you should not do that when running UDP,
 //! as UDP source addresses are trivial to spoof.
 
+use ingress::subscriptions::Connection;
 use log::*;
-use std::time::Duration;
-use tokio::time::interval;
+// use std::time::Duration;
+// use tokio::time::interval;
 
 pub mod ingress;
 
@@ -18,8 +19,16 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(ingress::start_ingress());
 
     // TODO: Use the API here.
-    let mut interval = interval(Duration::from_millis(100));
+    let mut connecton = ingress::subscriptions::connection();
+
     loop {
-        interval.tick().await;
+        let Ok(connection) = connecton.recv().await else {
+            continue;
+        };
+
+        match connection {
+            Connection::New(ip) => info!("{ip}: New connection established."),
+            Connection::Closed(ip) => info!("{ip}: Connection lost."),
+        }
     }
 }
