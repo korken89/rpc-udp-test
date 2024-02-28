@@ -4,9 +4,12 @@
 
 mod engine;
 
-/// Start the device ingress.
-pub async fn start_ingress() -> anyhow::Result<()> {
-    engine::udp_listener().await
+/// Run the device ingress.
+pub async fn run_ingress() {
+    tokio::select! {
+        _ = subscriptions::subscription_consolidation() => {}
+        _ = engine::udp_listener() => {}
+    }
 }
 
 //
@@ -15,8 +18,12 @@ pub async fn start_ingress() -> anyhow::Result<()> {
 
 /// Subscriptions to data are handled here.
 pub mod subscriptions {
-    use super::engine;
-    use rpc_definition::topics::heartbeat::Heartbeat;
+    use super::{api_handle, engine};
+    use once_cell::sync::Lazy;
+    use rpc_definition::topics::{
+        heartbeat::{Heartbeat, TopicHeartbeat},
+        some_data::{SomeData, TopicSomeData},
+    };
     use std::net::IpAddr;
     use tokio::sync::broadcast;
 
@@ -38,8 +45,6 @@ pub mod subscriptions {
         }
     }
 
-    /// Example of state tracking.
-    ///
     /// Get an event on connection change.
     pub fn connection() -> Subscription<Connection> {
         Subscription(engine::CONNECTION_SUBSCRIBER.subscribe())
@@ -47,20 +52,16 @@ pub mod subscriptions {
 
     /// Example public topic subscription (unsolicited messages).
     ///
+    /// Get heartbeats from a device.
+    pub async fn heartbeat() -> Subscription<(IpAddr, Heartbeat)> {
+        Subscription(HEARTBEAT_SUBSCRIBER.subscribe())
+    }
+
+    /// Example public topic subscription (unsolicited messages).
     ///
-    pub async fn heartbeat(device: IpAddr) -> Subscription<(IpAddr, Heartbeat)> {
-        // TODO: How to subscribe to ALL?
-        // We can add a worker that auto-subscribes to a single device as soon as a connection is made.
-
-        // let api = api_handle(&device)
-        //     .await
-        //     .map_err(|_notfound| SubscriptionError::IpNotFound)?;
-
-        // api.subscribe::<TopicHeartbeat>(10) // TODO: What depth?
-        //     .await
-        //     .map_err(|_closed| SubscriptionError::IpNotFound)
-
-        todo!()
+    /// Get some data from a device.
+    pub async fn some_data() -> Subscription<(IpAddr, SomeData)> {
+        Subscription(SOMEDATA_SUBSCRIBER.subscribe())
     }
 
     /// Errors on subscription.
@@ -68,6 +69,58 @@ pub mod subscriptions {
     pub enum SubscriptionError {
         IpNotFound,
         MessagesDropped,
+    }
+
+    //
+    // --------------- Subscription consolidation
+    //
+
+    /// Global subscription for heartbeats.
+    pub(crate) static HEARTBEAT_SUBSCRIBER: Lazy<broadcast::Sender<(IpAddr, Heartbeat)>> =
+        Lazy::new(|| broadcast::channel(100).0);
+
+    /// Global subscription for some data.
+    pub(crate) static SOMEDATA_SUBSCRIBER: Lazy<broadcast::Sender<(IpAddr, SomeData)>> =
+        Lazy::new(|| broadcast::channel(100).0);
+
+    /// This tracks unsolicited messages and sends them on the correct endpoint, in the end
+    /// consolidating all messages of the same type into one stream of `(source, message)`.
+    pub(crate) async fn subscription_consolidation() {
+        loop {
+            // On every new connection, subscribe to data for that device.
+            if let Ok(Connection::New(ip)) = connection().recv().await {
+                let Ok(api) = api_handle(&ip).await else {
+                    continue;
+                };
+
+                // Get subscriptions to all topic
+                let Ok(mut hb_sub) = api.subscribe::<TopicHeartbeat>(10).await else {
+                    continue;
+                };
+
+                let Ok(mut sd_sub) = api.subscribe::<TopicSomeData>(10).await else {
+                    continue;
+                };
+
+                // TODO: Add next subscription here.
+
+                tokio::spawn(async move {
+                    tokio::select! {
+                        _ = async {
+                            while let Some(s) = hb_sub.recv().await {
+                                let _ = HEARTBEAT_SUBSCRIBER.send((ip, s));
+                            }
+                        } => {}
+                        _ = async {
+                            while let Some(s) = sd_sub.recv().await {
+                                let _ = SOMEDATA_SUBSCRIBER.send((ip, s));
+                            }
+                        } => {}
+                        // TODO: Add next subscription forwarder here.
+                    }
+                });
+            }
+        }
     }
 }
 

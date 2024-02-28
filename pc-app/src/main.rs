@@ -9,14 +9,16 @@ use log::*;
 // use std::time::Duration;
 // use tokio::time::interval;
 
+// This is the "library"
 pub mod ingress;
 
+// This is the app using the library
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     pretty_env_logger::init();
 
     info!("Starting ingress");
-    tokio::spawn(ingress::start_ingress());
+    tokio::spawn(ingress::run_ingress());
 
     // TODO: Use the API here.
     let mut connecton = ingress::subscriptions::connection();

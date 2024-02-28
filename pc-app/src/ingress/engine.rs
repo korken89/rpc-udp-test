@@ -155,7 +155,7 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
 
     loop {
         // Adapted from `cobs_wire_worker`.
-        // Wait for EITHER a serialized request, OR some data from the embedded device
+        // Wait for EITHER a serialized request, OR some data from the embedded device.
         tokio::select! {
             sub = new_subs.recv() => {
                 let Some(si) = sub else {
@@ -192,15 +192,15 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
                 // Since UDP is already full packets, we don't need to use COBS or similar, a
                 // packet is a full message.
                 if let Ok((hdr, body)) = extract_header_from_bytes(&packet) {
-                    // Got a header, turn it into a frame
+                    // Got a header, turn it into a frame.
                     let frame = RpcFrame { header: hdr.clone(), body: body.to_vec() };
 
                     // Give priority to subscriptions. TBH I only do this because I know a hashmap
                     // lookup is cheaper than a waitmap search.
                     if let Some(tx) = subs.get_mut(&hdr.key) {
-                        // Yup, we have a subscription
+                        // Yup, we have a subscription.
                         if tx.send(frame).await.is_err() {
-                            // But if sending failed, the listener is gone, so drop it
+                            // But if sending failed, the listener is gone, so drop it.
                             subs.remove(&hdr.key);
                         }
                     } else {

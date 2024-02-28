@@ -12,10 +12,22 @@ pub mod topics {
 
         topic!(TopicHeartbeat, Heartbeat, "topic/heartbeat");
 
-        #[derive(Debug, PartialEq, Serialize, Deserialize, Schema)]
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Schema)]
         pub struct Heartbeat {
             pub value: f32,
             pub sequence_number: u32,
+        }
+    }
+
+    pub mod some_data {
+        use super::super::*;
+        use postcard_rpc::topic;
+
+        topic!(TopicSomeData, SomeData, "topic/somedata");
+
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Schema)]
+        pub struct SomeData {
+            pub data: u64,
         }
     }
 }
@@ -28,13 +40,13 @@ pub mod endpoints {
 
         endpoint!(SleepEndpoint, Sleep, SleepDone, "endpoint/sleep");
 
-        #[derive(Debug, PartialEq, Serialize, Deserialize, Schema)]
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Schema)]
         pub struct Sleep {
             pub seconds: u32,
             pub micros: u32,
         }
 
-        #[derive(Debug, PartialEq, Serialize, Deserialize, Schema)]
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Schema)]
         pub struct SleepDone {
             pub slept_for: Sleep,
         }
