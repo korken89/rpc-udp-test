@@ -1,184 +1,91 @@
 //! Embedded device ingress.
+//!
+//! Here the public APIs of the ingress are exposed.
 
-use log::*;
-use once_cell::sync::{Lazy, OnceCell};
-use rustc_hash::FxHashMap;
-use std::net::{IpAddr, SocketAddr};
-use tokio::{
-    net::UdpSocket,
-    sync::{
-        mpsc::{channel, error::TrySendError, Receiver, Sender},
-        RwLock,
-    },
-};
+mod engine;
+
+/// Start the device ingress.
+pub async fn start_ingress() -> anyhow::Result<()> {
+    engine::udp_listener().await
+}
+
+//
+// ---------------------- EXAMPLE PUBLIC API ----------------------
+//
 
 use rpc_definition::{
-    postcard_rpc::{
-        headered::extract_header_from_bytes,
-        host_client::{HostClient, ProcessError, RpcFrame, WireContext},
-    },
-    wire_error::{FatalError, ERROR_PATH},
+    endpoints::sleep::{Sleep, SleepDone, SleepEndpoint},
+    postcard_rpc::host_client::{HostClient, HostErr, Subscription},
+    topics::heartbeat::{Heartbeat, TopicHeartbeat},
+    wire_error::FatalError,
 };
+use std::{net::IpAddr, time::Duration};
+use tokio::time::timeout;
 
-/// Global singleton for the UDP socket.
+/// Example public API endpoint.
 ///
-/// RX happens in `udp_listener`, TX in `communication_worker`.
-static SOCKET: OnceCell<UdpSocket> = OnceCell::new();
+/// This will make the MCU server wait the requested time before answering.
+pub async fn sleep(device: IpAddr, sleep: &Sleep) -> Result<SleepDone, ApiError> {
+    let api = api_handle(&device).await?;
 
-/// Core UDP socket listener, creates the socket and handles all incoming packets.
+    // TODO: Settable timeout, always have in public API? Seems not nice...
+    timeout(
+        Duration::from_secs(1),
+        api.send_resp::<SleepEndpoint>(sleep),
+    )
+    .await
+    .map_err(|_timeout| ApiError::NoResponse)?
+    .map_err(Into::into)
+}
+
+/// Example public topic subscription (unsolicited messages).
 ///
-/// This should run until the app closes.
-pub async fn udp_listener() -> anyhow::Result<()> {
-    let socket = UdpSocket::bind("0.0.0.0:8321").await?;
-    let socket = SOCKET.get_or_init(|| socket);
+///
+pub async fn subscribe_heartbeat(device: IpAddr) -> Result<Subscription<Heartbeat>, ApiError> {
+    // TODO: How to subscribe to ALL?
+    // We can add a worker that auto-subscribes to a single device as soon as a connection is made.
 
-    let mut wire_workers = FxHashMap::default();
-    wire_workers.reserve(1000);
+    let api = api_handle(&device).await?;
 
-    info!("Waiting for connections...");
+    api.subscribe::<TopicHeartbeat>(10) // TODO: What depth?
+        .await
+        .map_err(|_closed| ApiError::IpNotFound)
+}
 
-    loop {
-        let mut rx_buf = Vec::with_capacity(2048);
+/// Errors of the public API.
+pub enum ApiError {
+    IpNotFound,
+    NoResponse,
+    // Unsure if the ones below should be log::warn/error instead of be given to the user.
+    // Not sure if a user really can do anything with them.
+    BadResponse,
+    Malformed,
+    TooManyConcurrentApiCalls,
+    Unimplemented,
+}
 
-        let (len, from) = socket.recv_buf_from(&mut rx_buf).await?;
-        assert_eq!(rx_buf.len(), len);
-
-        let ip = from.ip();
-
-        // Find existing RX worker or create a new one.
-        let worker = wire_workers
-            .entry(ip)
-            .or_insert_with(|| create_communication_worker(ip));
-
-        // Send packet to the correct worker.
-        if let Err(e) = worker.try_send(rx_buf) {
-            match e {
-                TrySendError::Full(_) => {
-                    error!("{ip}: Can't keep up with incoming packets");
-                }
-                TrySendError::Closed(retry_payload) => {
-                    // Recreate the worker if the old one has shut down.
-                    wire_workers.insert(ip, create_communication_worker(ip));
-
-                    if let Err(e) = wire_workers.get_mut(&ip).unwrap().try_send(retry_payload) {
-                        error!(
-                            "{}: Retry worker failed to start with error {e:?}",
-                            from.ip()
-                        );
-                    }
-                }
-            }
+/// Auto-convert from internal communication errors to user understandable errors.
+impl From<HostErr<FatalError>> for ApiError {
+    fn from(value: HostErr<FatalError>) -> Self {
+        match value {
+            HostErr::Wire(we) => match we {
+                FatalError::UnknownEndpoint => ApiError::Unimplemented,
+                FatalError::NotEnoughSenders => ApiError::TooManyConcurrentApiCalls,
+                FatalError::WireFailure => ApiError::Malformed,
+            },
+            HostErr::BadResponse => ApiError::BadResponse,
+            HostErr::Postcard(_) => ApiError::Malformed,
+            HostErr::Closed => ApiError::NoResponse,
         }
     }
 }
 
-// Create a new worker for a specific IP.
-fn create_communication_worker(from: IpAddr) -> Sender<Vec<u8>> {
-    let (rx_packet_sender, rx_packet_recv) = channel(10);
-
-    tokio::spawn(communication_worker(from, rx_packet_recv));
-
-    rx_packet_sender
-}
-
-/// Global state of the active API clients for use by public API.
-pub(crate) static API_CLIENT: Lazy<RwLock<FxHashMap<IpAddr, HostClient<FatalError>>>> =
-    Lazy::new(|| {
-        RwLock::new({
-            let mut m = FxHashMap::default();
-            m.reserve(1000);
-            m
-        })
-    });
-
-/// This handles incoming packets from a specific IP.
-async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
-    info!("{ip}: Registered new connection, starting handshake");
-
-    // TODO: This is where we should perform ECDH handshake & authenticity verification.
-    // let secure_channel = match perform_handshake(ip, packet_recv).await {
-    //     Ok(ch) => ch,
-    //     Err(e) => {
-    //         error!("{ip}: Failed handshake, error = {e:?}");
-    //         return;
-    //     }
-    // };
-
-    info!("{ip}: Connection active");
-
-    // We have one host client per connection.
-    let (hostclient, wirecontext) = HostClient::<FatalError>::new_manual(ERROR_PATH, 10);
-
-    // Store the API client for access by public APIs
-    {
-        API_CLIENT.write().await.insert(ip, hostclient);
-    }
-
-    // Start handling of all I/O.
-    let WireContext {
-        mut outgoing,
-        incoming,
-        mut new_subs,
-    } = wirecontext;
-
-    let mut subs = FxHashMap::default();
-
-    loop {
-        // Adapted from `cobs_wire_worker`.
-        // Wait for EITHER a serialized request, OR some data from the embedded device
-        tokio::select! {
-            sub = new_subs.recv() => {
-                let Some(si) = sub else {
-                    break;
-                };
-
-                subs.insert(si.key, si.tx);
-            }
-            out = outgoing.recv() => {
-                // Receiver returns None when all Senders have hung up.
-                let (Some(msg), Some(socket)) = (out, SOCKET.get()) else {
-                    break;
-                };
-
-                // Send message via the UDP socket.
-                if let Err(e) = socket.send_to(&msg.to_bytes(), (ip, 8321)).await {
-                    error!("{ip}: Socket send error = {e:?}");
-                    break;
-                }
-            }
-            packet = packet_recv.recv() => {
-                // Make sure the UDP RX worker is still alive.
-                let Some(packet) = packet else {
-                    break;
-                };
-
-                // Attempt to extract a header so we can get the sequence number.
-                // Since UDP is already full packets, we don't need to use COBS or similar, a
-                // packet is a full message.
-                if let Ok((hdr, body)) = extract_header_from_bytes(&packet) {
-                    // Got a header, turn it into a frame
-                    let frame = RpcFrame { header: hdr.clone(), body: body.to_vec() };
-
-                    // Give priority to subscriptions. TBH I only do this because I know a hashmap
-                    // lookup is cheaper than a waitmap search.
-                    if let Some(tx) = subs.get_mut(&hdr.key) {
-                        // Yup, we have a subscription
-                        if tx.send(frame).await.is_err() {
-                            // But if sending failed, the listener is gone, so drop it
-                            subs.remove(&hdr.key);
-                        }
-                    } else {
-                        // Wake the given sequence number. If the WaitMap is closed, we're done here
-                        if let Err(ProcessError::Closed) = incoming.process(frame) {
-                            break;
-                        }
-                    }
-                }
-
-            }
-        }
-    }
-
-    // cleanup of global state
-    API_CLIENT.write().await.remove(&ip);
+async fn api_handle(device: &IpAddr) -> Result<HostClient<FatalError>, ApiError> {
+    // Hold the read lock to the global state as short as possible.
+    engine::API_CLIENT
+        .read()
+        .await
+        .get(&device)
+        .ok_or(ApiError::IpNotFound)
+        .cloned()
 }

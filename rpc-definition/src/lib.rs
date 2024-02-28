@@ -6,15 +6,16 @@ use postcard::experimental::schema::Schema;
 use serde::{Deserialize, Serialize};
 
 pub mod topics {
-    pub mod some_data {
+    pub mod heartbeat {
         use super::super::*;
         use postcard_rpc::topic;
 
-        topic!(TopicSomeData, SomeData, "topic/somedata");
+        topic!(TopicHeartbeat, Heartbeat, "topic/heartbeat");
 
         #[derive(Debug, PartialEq, Serialize, Deserialize, Schema)]
-        pub struct SomeData {
+        pub struct Heartbeat {
             pub value: f32,
+            pub sequence_number: u32,
         }
     }
 }
