@@ -1,6 +1,8 @@
 //! Embedded device ingress.
 //!
 //! Here the public APIs of the ingress are exposed.
+//!
+//! TODO: Is it worth trying to remove the `static` variables in this lib?
 
 use rpc_definition::{postcard_rpc::host_client::HostClient, wire_error::FatalError};
 use std::net::IpAddr;

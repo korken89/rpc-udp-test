@@ -75,6 +75,7 @@ pub async fn udp_listener(socket: UdpSocket) -> ! {
                 }
                 TrySendError::Closed(retry_payload) => {
                     // Recreate the worker if the old one has shut down.
+                    // This can happen when a device was connected, shut down, and connected again.
                     wire_workers.insert(ip, create_communication_worker(ip));
 
                     if let Err(e) = wire_workers.get_mut(&ip).unwrap().try_send(retry_payload) {
@@ -116,7 +117,7 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
 
     // TODO: This is where we should perform ECDH handshake & authenticity verification of a device.
     //
-    // let secure_channel = match perform_handshake(ip, packet_recv).await {
+    // let secure_channel = match secure_channel::perform_handshake(ip, packet_recv).await {
     //     Ok(ch) => ch,
     //     Err(e) => {
     //         error!("{ip}: Failed handshake, error = {e:?}");
@@ -128,11 +129,11 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
     // accepting them as active. Most likely they will restart, and this connection will be closed
     // and recreated as soon as the device comes back updated and can pass this check.
     //
-    // match check_version_and_maybe_update(&mut packet_recv) {
+    // match firmware_updating::check_version_and_maybe_update(&mut packet_recv) {
     //     FirmwareUpdateStatus::NeedsUpdating => {
     //         debug!("{ip}: Firmware needs updating, performing firmware update");
     //
-    //         start_firmware_update(&ip).await;
+    //         firmware_updating::start_firmware_update(&ip, packet_recv).await;
     //
     //         // Close the worker and await the reconnection after updates.
     //         return;
@@ -168,11 +169,11 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
         // Wait for EITHER a serialized request, OR some data from the embedded device.
         tokio::select! {
             sub = new_subs.recv() => {
-                let Some(si) = sub else {
+                let Some(new_subscription) = sub else {
                     break;
                 };
 
-                subs.insert(si.key, si.tx);
+                subs.insert(new_subscription.key, new_subscription.tx);
             }
             out = outgoing.recv() => {
                 // Receiver returns None when all Senders have hung up.
@@ -198,6 +199,8 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
                     break;
                 };
 
+                trace!("{ip}: Received packet {packet:02x?}");
+
                 // Attempt to extract a header so we can get the sequence number.
                 // Since UDP is already full packets, we don't need to use COBS or similar, a
                 // packet is a full message.
@@ -219,8 +222,9 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
                             break;
                         }
                     }
+                } else {
+                    debug!("{ip}: Malformed packet");
                 }
-
             }
         }
     }
