@@ -9,7 +9,7 @@ use log::*;
 // use std::time::Duration;
 // use tokio::time::interval;
 
-// This is the "library"
+// This is the library
 pub mod ingress;
 
 // This is the app using the library

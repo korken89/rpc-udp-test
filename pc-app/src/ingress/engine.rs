@@ -41,6 +41,7 @@ pub async fn udp_listener() -> anyhow::Result<()> {
     let socket = UdpSocket::bind("0.0.0.0:8321").await?;
     let socket = SOCKET.get_or_init(|| socket);
 
+    // Wire workers are handling RX/TX packets, one worker per IP connected.
     let mut wire_workers = FxHashMap::default();
     wire_workers.reserve(1000);
 
@@ -50,16 +51,16 @@ pub async fn udp_listener() -> anyhow::Result<()> {
         let mut rx_buf = Vec::with_capacity(2048);
 
         let (len, from) = socket.recv_buf_from(&mut rx_buf).await?;
-        assert_eq!(rx_buf.len(), len);
+        assert_eq!(rx_buf.len(), len); // Assumption: We don't need `len`.
 
         let ip = from.ip();
 
-        // Find existing RX worker or create a new one.
+        // Find existing RX/TX worker or create a new one.
         let worker = wire_workers
             .entry(ip)
             .or_insert_with(|| create_communication_worker(ip));
 
-        // Send packet to the correct worker.
+        // Send packet to the worker, or create it again if it has closed its connection.
         if let Err(e) = worker.try_send(rx_buf) {
             match e {
                 TrySendError::Full(_) => {
@@ -100,13 +101,14 @@ pub(crate) static API_CLIENTS: Lazy<RwLock<FxHashMap<IpAddr, HostClient<FatalErr
 
 /// Global subscription to signal a new connection is available.
 pub(crate) static CONNECTION_SUBSCRIBER: Lazy<broadcast::Sender<Connection>> =
-    Lazy::new(|| broadcast::channel(16).0);
+    Lazy::new(|| broadcast::channel(1000).0);
 
 /// This handles incoming packets from a specific IP.
 async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
     debug!("{ip}: Registered new connection, starting handshake");
 
     // TODO: This is where we should perform ECDH handshake & authenticity verification of a device.
+    //
     // let secure_channel = match perform_handshake(ip, packet_recv).await {
     //     Ok(ch) => ch,
     //     Err(e) => {
@@ -118,6 +120,7 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
     // TODO: This is where we should perform version checks and firmware update devices before
     // accepting them as active. Most likely they will restart, and this connection will be closed
     // and recreated as soon as the device comes back updated and can pass this check.
+    //
     // match check_version_and_maybe_update(&mut packet_recv) {
     //     FirmwareUpdateStatus::NeedsUpdating => {
     //         debug!("{ip}: Firmware needs updating, performing firmware update");

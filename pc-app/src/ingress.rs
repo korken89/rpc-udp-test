@@ -22,7 +22,7 @@ pub async fn run_ingress() {
     }
 }
 
-/// Helper method to get access to an
+/// Helper method to get access to a specific device's API client.
 async fn api_handle(device: &IpAddr) -> Result<HostClient<FatalError>, api::ApiError> {
     // Hold the read lock to the global state as short as possible.
     engine::API_CLIENTS

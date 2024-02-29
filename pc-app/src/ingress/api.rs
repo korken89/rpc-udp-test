@@ -15,6 +15,7 @@ pub async fn sleep(device: IpAddr, sleep: &Sleep) -> Result<SleepDone, ApiError>
 
     // TODO: Settable timeout, always have in public API? Seems not nice...
     // TODO: Do retries.
+
     timeout(
         Duration::from_secs(1),
         api.send_resp::<SleepEndpoint>(sleep),
