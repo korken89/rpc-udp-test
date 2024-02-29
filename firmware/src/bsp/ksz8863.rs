@@ -1,8 +1,8 @@
 //! KSZ8863 SMI Ethernet PHY
 
+use core::task::Context;
 use embassy_stm32::eth::{StationManagement, PHY};
 use embassy_time::{Duration, Timer};
-use futures::task::Context;
 use futures::FutureExt;
 
 #[allow(dead_code)]

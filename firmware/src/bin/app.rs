@@ -2,6 +2,7 @@
 #![no_std]
 #![allow(incomplete_features)]
 
+use alloc::collections::btree_map::Entry;
 use embassy_net::{
     udp::{PacketMetadata, UdpSocket},
     Ipv4Address,
@@ -86,6 +87,111 @@ pub async fn handle_stack(cx: app::handle_stack::Context<'_>) -> ! {
 //     }
 // }
 
+use rpc_definition::postcard_rpc::Endpoint;
+
+/// Possible errors in dispatch handling.
+pub enum DispatchError {
+    /// The deserialization of the header failed.
+    Header(postcard::Error),
+    /// The  deserialization of the body failed.
+    Body(postcard::Error),
+}
+
+macro_rules! postcard_rpc_dispatch {
+    (
+        $buf:ident,
+        $unhandled:ident = _ => $unhandled_body:tt,
+        $($request:pat = $endpoint:path => $body:tt),*
+    ) => {
+        match rpc_definition::postcard_rpc::headered::extract_header_from_bytes($buf) {
+            Ok((hdr, body)) => {
+                match hdr.key {
+                $(
+                    <$endpoint as Endpoint>::REQ_KEY => {
+                        match postcard::take_from_bytes::<<$endpoint as Endpoint>::Request>(body) {
+                            Ok((req, _rest)) => {
+                                let $request = (&hdr, req);
+                                $body
+
+                                Ok(())
+                            }
+                            Err(e) => Err(DispatchError::Body(e))
+                        }
+                    }
+                )*
+                    _ => {
+                        let $unhandled = (&hdr, body);
+
+                        $unhandled_body
+
+                        Ok(())
+                    }
+                }
+            }
+            Err(e) => Err(DispatchError::Header(e)),
+        }
+
+    };
+}
+
+async fn dispatch(buf: &[u8]) -> Result<(), ()> {
+    use rpc_definition::endpoints::{pingpong::PingPongEndpoint, sleep::SleepEndpoint};
+
+    let r = postcard_rpc_dispatch!(
+        buf,
+        unhandled = _ => {
+            // Do something with unhandled requests, maybe log a warning.
+        },
+        (hdr, sleeping_req) = SleepEndpoint => {
+            // Do something with `sleeping_req`
+            // some_queue.try_send(sleeping_req);
+        },
+        pingpong_req = PingPongEndpoint => {
+            // Do something with `pingpong_req`
+        }
+    );
+
+    // postcard_rpc!(
+    //     sleeping_req = SleepingEnpoint => {
+    //       // Do something with `sleeping_req`
+    //     }
+    //     pingpong_req = PingPongEndpoint => {
+    //       // Do something with `pingpong_req`
+    //     }
+    // );
+    //
+    // Expands to:
+
+    // let (hdr, buf) =
+    //     rpc_definition::postcard_rpc::headered::extract_header_from_bytes(buf).map_err(|_| ())?;
+
+    // match hdr.key {
+    //     SleepEndpoint::REQ_KEY => {
+    //         let Ok((msg, _rest)) =
+    //             postcard::take_from_bytes::<<SleepEndpoint as Endpoint>::Request>(buf)
+    //         else {
+    //             return Err(());
+    //         };
+
+    //         // Handle sleep command asynchronously.
+    //     }
+    //     PingPongEndpoint::REQ_KEY => {
+    //         let Ok((msg, _rest)) =
+    //             postcard::take_from_bytes::<<PingPongEndpoint as Endpoint>::Request>(buf)
+    //         else {
+    //             return Err(());
+    //         };
+
+    //         // Handle ping command asynchronously.
+    //     }
+    //     _ => {
+    //         return Err(());
+    //     }
+    // }
+
+    Ok(())
+}
+
 pub async fn run_comms(cx: app::run_comms::Context<'_>) -> ! {
     let stack = *cx.shared.network_stack;
 
@@ -113,8 +219,6 @@ pub async fn run_comms(cx: app::run_comms::Context<'_>) -> ! {
         );
         socket.bind(8321).unwrap();
 
-        // socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
-
         let remote_endpoint = (Ipv4Address::new(192, 168, 0, 200), 8321);
 
         loop {
@@ -122,6 +226,7 @@ pub async fn run_comms(cx: app::run_comms::Context<'_>) -> ! {
             if let Ok(Ok((n, ep))) =
                 Systick::timeout_after(3.secs(), socket.recv_from(&mut buf)).await
             {
+                dispatch(&buf[..n]);
                 if let Ok(s) = core::str::from_utf8(&buf[..n]) {
                     defmt::info!("rxd from {}: {}", ep, s);
                 }

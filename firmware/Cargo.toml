@@ -23,15 +23,17 @@ static_cell = "2"
 embassy-stm32 = { version = "0.1.0", features = ["defmt", "stm32f407ze", "exti", "unstable-pac", "time-driver-any"] }
 embassy-net = { version = "0.4.0", features = ["defmt", "tcp", "udp", "dns", "dhcpv4-hostname", "dhcpv4", "medium-ethernet"] }
 embassy-time = { version = "0.3.0", features = ["defmt", "tick-hz-32_768", "generic-queue"] }
+embassy-futures = "0.1.1"
 
 
 rand_core = "0.6.4"
 embedded-io = { version = "0.6.0" }
 embedded-io-async = { version = "0.6.1" }
-futures = { version = "0.3.17", default-features = false, features = ["async-await"] }
+futures = { version = "0.3.30", default-features = false, features = ["async-await"] }
 
 # RPC
 rpc-definition = { path = "../rpc-definition" }
+postcard = { version = "1.0.8", features = ["defmt"] }
 
 [features]
 other = []
