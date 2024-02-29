@@ -1,4 +1,7 @@
 //! The engine drives all communication.
+//!
+//! Note: This app IP as identifier for each device. You should not do that when running UDP
+//! unless you have authentication on the packets, as UDP source addresses are trivial to spoof.
 
 use log::*;
 use once_cell::sync::{Lazy, OnceCell};
@@ -25,7 +28,9 @@ use rpc_definition::{
 /// The new state of a connection.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Connection {
+    /// A new connection was established.
     New(IpAddr),
+    /// A connection was dropped.
     Closed(IpAddr),
 }
 
@@ -34,11 +39,10 @@ pub enum Connection {
 /// RX happens in `udp_listener`, TX in `communication_worker`.
 static SOCKET: OnceCell<UdpSocket> = OnceCell::new();
 
-/// Core UDP socket listener, creates the socket and handles all incoming packets.
+/// Core socket listener, handles all incoming packets.
 ///
 /// This should run until the app closes.
-pub async fn udp_listener() -> anyhow::Result<()> {
-    let socket = UdpSocket::bind("0.0.0.0:8321").await?;
+pub async fn udp_listener(socket: UdpSocket) -> ! {
     let socket = SOCKET.get_or_init(|| socket);
 
     // Wire workers are handling RX/TX packets, one worker per IP connected.
@@ -50,7 +54,10 @@ pub async fn udp_listener() -> anyhow::Result<()> {
     loop {
         let mut rx_buf = Vec::with_capacity(2048);
 
-        let (len, from) = socket.recv_buf_from(&mut rx_buf).await?;
+        let Ok((len, from)) = socket.recv_buf_from(&mut rx_buf).await else {
+            error!("The socket was unable to receive data");
+            continue;
+        };
         assert_eq!(rx_buf.len(), len); // Assumption: We don't need `len`.
 
         let ip = from.ip();

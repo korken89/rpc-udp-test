@@ -4,6 +4,7 @@
 
 use rpc_definition::{postcard_rpc::host_client::HostClient, wire_error::FatalError};
 use std::net::IpAddr;
+use tokio::net::UdpSocket;
 
 // Private internals that run the communication.
 mod engine;
@@ -16,9 +17,13 @@ pub mod subscriptions;
 
 /// Run the device ingress.
 pub async fn run_ingress() {
+    let socket = UdpSocket::bind("0.0.0.0:8321")
+        .await
+        .expect("Unable to bind socket");
+
     tokio::select! {
         _ = subscriptions::subscription_consolidation() => {}
-        _ = engine::udp_listener() => {}
+        _ = engine::udp_listener(socket) => {}
     }
 }
 
