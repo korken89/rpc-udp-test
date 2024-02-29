@@ -51,6 +51,20 @@ pub mod endpoints {
             pub slept_for: Sleep,
         }
     }
+
+    pub mod pingpong {
+        use postcard_rpc::endpoint;
+
+        use super::super::*;
+
+        endpoint!(PingPongEndpoint, Ping, Pong, "endpoint/pingpong");
+
+        #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize, Schema)]
+        pub struct Ping {}
+
+        #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize, Schema)]
+        pub struct Pong {}
+    }
 }
 
 pub mod wire_error {

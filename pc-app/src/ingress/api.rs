@@ -1,11 +1,16 @@
 use super::api_handle;
 use rpc_definition::{
-    endpoints::sleep::{Sleep, SleepDone, SleepEndpoint},
+    endpoints::{
+        pingpong::{Ping, PingPongEndpoint, Pong},
+        sleep::{Sleep, SleepDone, SleepEndpoint},
+    },
     postcard_rpc::host_client::HostErr,
     wire_error::FatalError,
 };
-use std::{net::IpAddr, time::Duration};
+use std::{future::Future, net::IpAddr, time::Duration};
 use tokio::time::timeout;
+
+// TODO: Do retries.
 
 /// Example public API endpoint.
 ///
@@ -13,16 +18,27 @@ use tokio::time::timeout;
 pub async fn sleep(device: IpAddr, sleep: &Sleep) -> Result<SleepDone, ApiError> {
     let api = api_handle(&device).await?;
 
-    // TODO: Settable timeout, always have in public API? Seems not nice...
-    // TODO: Do retries.
+    timeout_helper(api.send_resp::<SleepEndpoint>(sleep)).await
+}
 
-    timeout(
-        Duration::from_secs(1),
-        api.send_resp::<SleepEndpoint>(sleep),
-    )
-    .await
-    .map_err(|_timeout| ApiError::NoResponse)?
-    .map_err(Into::into)
+/// Example public API endpoint.
+///
+/// This will perform a ping/pong exchange with the device.
+pub async fn ping(device: IpAddr) -> Result<Pong, ApiError> {
+    let api = api_handle(&device).await?;
+
+    timeout_helper(api.send_resp::<PingPongEndpoint>(&Ping {})).await
+}
+
+async fn timeout_helper<F, T>(f: F) -> Result<T, ApiError>
+where
+    F: Future<Output = Result<T, HostErr<FatalError>>>,
+{
+    // TODO: Settable timeout, always have in public API? Seems not nice...
+    timeout(Duration::from_secs(1), f)
+        .await
+        .map_err(|_timeout| ApiError::NoResponse)?
+        .map_err(Into::into)
 }
 
 /// Errors of the public API.
