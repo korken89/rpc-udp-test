@@ -89,7 +89,7 @@ fn create_communication_worker(from: IpAddr) -> Sender<Vec<u8>> {
 }
 
 /// Global state of the active API clients for use by public API.
-pub(crate) static API_CLIENT: Lazy<RwLock<FxHashMap<IpAddr, HostClient<FatalError>>>> =
+pub(crate) static API_CLIENTS: Lazy<RwLock<FxHashMap<IpAddr, HostClient<FatalError>>>> =
     Lazy::new(|| {
         RwLock::new({
             let mut m = FxHashMap::default();
@@ -139,7 +139,7 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
 
     // Store the API client for access by public APIs
     {
-        API_CLIENT.write().await.insert(ip, hostclient);
+        API_CLIENTS.write().await.insert(ip, hostclient);
     }
 
     let _ = CONNECTION_SUBSCRIBER.send(Connection::New(ip));
@@ -216,5 +216,5 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
     }
 
     // cleanup of global state
-    API_CLIENT.write().await.remove(&ip);
+    API_CLIENTS.write().await.remove(&ip);
 }
