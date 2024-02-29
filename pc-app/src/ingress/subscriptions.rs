@@ -76,40 +76,42 @@ pub async fn some_data() -> Subscription<(IpAddr, SomeData)> {
 pub(crate) async fn subscription_consolidation() {
     loop {
         // On every new connection, subscribe to data for that device.
-        if let Ok(Connection::New(ip)) = connection().recv().await {
-            let Ok(api) = api_handle(&ip).await else {
-                continue;
-            };
+        match connection().recv().await {
+            Ok(Connection::New(ip)) => {
+                let Ok(api) = api_handle(&ip).await else {
+                    continue;
+                };
 
-            // Get subscriptions to all topic
-            let Ok(mut heartbeat) = api.subscribe::<TopicHeartbeat>(10).await else {
-                continue;
-            };
+                // Get subscriptions to all topic
+                let Ok(mut heartbeat) = api.subscribe::<TopicHeartbeat>(10).await else {
+                    continue;
+                };
 
-            let Ok(mut some_data) = api.subscribe::<TopicSomeData>(10).await else {
-                continue;
-            };
+                let Ok(mut some_data) = api.subscribe::<TopicSomeData>(10).await else {
+                    continue;
+                };
 
-            // TODO: Add next subscription here.
+                // TODO: Add next subscription here.
 
-            tokio::spawn(async move {
-                tokio::select! {
-                    _ = async {
-                        while let Some(s) = heartbeat.recv().await {
-                            let _ = HEARTBEAT_SUBSCRIBER.send((ip, s));
-                        }
-                    } => {}
-                    _ = async {
-                        while let Some(s) = some_data.recv().await {
-                            let _ = SOMEDATA_SUBSCRIBER.send((ip, s));
-                        }
-                    } => {}
+                tokio::spawn(async move {
+                    tokio::select! {
+                        _ = async {
+                            while let Some(s) = heartbeat.recv().await {
+                                let _ = HEARTBEAT_SUBSCRIBER.send((ip, s));
+                            }
+                        } => {}
+                        _ = async {
+                            while let Some(s) = some_data.recv().await {
+                                let _ = SOMEDATA_SUBSCRIBER.send((ip, s));
+                            }
+                        } => {}
 
-                    // TODO: Add next subscription forwarder here.
-                }
-            });
-        } else {
-            error!("subscription_consolidation: Unable to keep up with new connecitons");
+                        // TODO: Add next subscription forwarder here.
+                    }
+                });
+            }
+            Ok(Connection::Closed(_)) => {}
+            Err(_) => error!("subscription_consolidation: Unable to keep up with new connecitons"),
         }
     }
 }
