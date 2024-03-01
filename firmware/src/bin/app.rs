@@ -2,30 +2,40 @@
 #![no_std]
 #![allow(incomplete_features)]
 
-use alloc::collections::btree_map::Entry;
+use embassy_futures::join::join;
 use embassy_net::{
     udp::{PacketMetadata, UdpSocket},
     Ipv4Address,
 };
+use heapless::{binary_heap::Min, BinaryHeap};
 use rtic_monotonics::{
-    systick::{fugit::MicrosDurationU64, ExtU64, Systick},
+    systick::{
+        fugit::{ExtU64, MicrosDurationU64},
+        Systick,
+    },
     Monotonic,
 };
 
 defmt::timestamp!("{=u64:us}", {
     let time_us: MicrosDurationU64 = Systick::now().duration_since_epoch().convert();
 
-    time_us.ticks() as u64
+    time_us.ticks()
 });
 
 #[rtic::app(device = embassy_stm32::pac, dispatchers = [I2C1_EV, I2C1_ER, I2C2_EV, I2C2_ER], peripherals = false)]
 mod app {
-    use crate::{handle_stack, run_comms};
+    use crate::{handle_sleep_command, handle_stack, run_comms};
+    use rpc_definition::endpoints::sleep::Sleep;
     use rpc_testing::bsp::{self, NetworkStack};
+    use rtic_sync::{
+        channel::{Receiver, Sender},
+        make_channel,
+    };
 
     #[shared]
     struct Shared {
         network_stack: NetworkStack,
+        ethernet_tx_sender: Sender<'static, [u8; 128], 1>,
     }
 
     #[local]
@@ -37,19 +47,38 @@ mod app {
 
         let network_stack = bsp::init(cx.core);
 
-        handle_stack::spawn().ok();
-        run_comms::spawn().ok();
+        let (ethernet_tx_sender, ethernet_tx_receiver) = make_channel!([u8; 128], 1);
+        let (sleep_request_sender, sleep_request_receiver) = make_channel!((u32, Sleep), 8);
 
-        (Shared { network_stack }, Local {})
+        handle_stack::spawn().ok();
+        run_comms::spawn(ethernet_tx_receiver, sleep_request_sender).ok();
+        handle_sleep_command::spawn(sleep_request_receiver).ok();
+
+        (
+            Shared {
+                network_stack,
+                ethernet_tx_sender,
+            },
+            Local {},
+        )
     }
 
     extern "Rust" {
         #[task(shared = [&network_stack])]
         async fn handle_stack(_: handle_stack::Context);
 
-        #[task(shared = [&network_stack])]
-        async fn run_comms(_: run_comms::Context);
+        #[task(shared = [&network_stack, &ethernet_tx_sender])]
+        async fn run_comms(
+            _: run_comms::Context,
+            _: Receiver<'static, [u8; 128], 1>,
+            _: Sender<'static, (u32, Sleep), 8>,
+        );
 
+        #[task(shared = [&ethernet_tx_sender])]
+        async fn handle_sleep_command(
+            _: handle_sleep_command::Context,
+            _: Receiver<'static, (u32, Sleep), 8>,
+        );
     }
 }
 
@@ -57,142 +86,155 @@ pub async fn handle_stack(cx: app::handle_stack::Context<'_>) -> ! {
     cx.shared.network_stack.run().await
 }
 
-// pub async fn dispatcher(innie: Innie, outie: OutieRef, mut led: Output<'static, AnyPin>) {
-//     loop {
-//         let msg = innie.receive().await;
+use rpc_definition::{
+    endpoints::{
+        pingpong::{PingPongEndpoint, Pong},
+        sleep::{Sleep, SleepDone, SleepEndpoint},
+    },
+    postcard_rpc::{self, Endpoint},
+    wire_error::{FatalError, ERROR_KEY},
+};
+use rtic_sync::channel::{Receiver, Sender};
 
-//         let Some(whbody) = WhBody::try_from(&msg) else {
-//             continue;
-//         };
-
-//         match whbody.wh.key {
-//             icd::Uptime::REQ_KEY => {
-//                 // This has no request body
-//                 handle_uptime(outie, whbody.wh.seq_no).await;
-//             }
-//             icd::ResetToBootloader::REQ_KEY => {
-//                 handle_reset_bootload(outie, whbody.wh.seq_no).await;
-//             }
-//             icd::Ident::REQ_KEY => {
-//                 if let Ok(time_ms) =
-//                     postcard::from_bytes::<<icd::Ident as Endpoint>::Request>(whbody.body)
-//                 {
-//                     handle_ident(outie, whbody.wh.seq_no, time_ms, &mut led).await;
-//                 }
-//             }
-//             _ => {
-//                 // oops
-//             }
-//         }
-//     }
-// }
-
-use rpc_definition::postcard_rpc::Endpoint;
-
-/// Possible errors in dispatch handling.
-pub enum DispatchError {
-    /// The deserialization of the header failed.
-    Header(postcard::Error),
-    /// The  deserialization of the body failed.
-    Body(postcard::Error),
-}
-
-macro_rules! postcard_rpc_dispatch {
-    (
-        $buf:ident,
-        $unhandled:ident = _ => $unhandled_body:tt,
-        $($request:pat = $endpoint:path => $body:tt),*
-    ) => {
-        match rpc_definition::postcard_rpc::headered::extract_header_from_bytes($buf) {
-            Ok((hdr, body)) => {
-                match hdr.key {
-                $(
-                    <$endpoint as Endpoint>::REQ_KEY => {
-                        match postcard::take_from_bytes::<<$endpoint as Endpoint>::Request>(body) {
-                            Ok((req, _rest)) => {
-                                let $request = (&hdr, req);
-                                $body
-
-                                Ok(())
-                            }
-                            Err(e) => Err(DispatchError::Body(e))
-                        }
-                    }
-                )*
-                    _ => {
-                        let $unhandled = (&hdr, body);
-
-                        $unhandled_body
-
-                        Ok(())
-                    }
-                }
-            }
-            Err(e) => Err(DispatchError::Header(e)),
-        }
-
-    };
-}
-
-async fn dispatch(buf: &[u8]) -> Result<(), ()> {
-    use rpc_definition::endpoints::{pingpong::PingPongEndpoint, sleep::SleepEndpoint};
-
-    let r = postcard_rpc_dispatch!(
+async fn dispatch(
+    buf: &[u8],
+    ethernet_tx: &mut Sender<'static, [u8; 128], 1>,
+    sleep_command_sender: &mut Sender<'static, (u32, Sleep), 8>,
+) {
+    if let Err(e) = postcard_rpc::dispatch!(
         buf,
-        unhandled = _ => {
+        (hdr, _buf) = _ => {
             // Do something with unhandled requests, maybe log a warning.
+            defmt::error!("Got unhandled endpoint/topic with key = {:x}", hdr.key);
+            unhandled_error(hdr.seq_no, ethernet_tx).await;
         },
-        (hdr, sleeping_req) = SleepEndpoint => {
+        EP: (hdr, sleeping_req) = SleepEndpoint => {
             // Do something with `sleeping_req`
-            // some_queue.try_send(sleeping_req);
+            sleep_command_sender.try_send((hdr.seq_no, sleeping_req)).ok();
+
         },
-        pingpong_req = PingPongEndpoint => {
+        EP: (hdr, _pingpong_req) = PingPongEndpoint => {
             // Do something with `pingpong_req`
+            ping_response(hdr.seq_no, ethernet_tx).await;
         }
-    );
-
-    // postcard_rpc!(
-    //     sleeping_req = SleepingEnpoint => {
-    //       // Do something with `sleeping_req`
-    //     }
-    //     pingpong_req = PingPongEndpoint => {
-    //       // Do something with `pingpong_req`
-    //     }
-    // );
-    //
-    // Expands to:
-
-    // let (hdr, buf) =
-    //     rpc_definition::postcard_rpc::headered::extract_header_from_bytes(buf).map_err(|_| ())?;
-
-    // match hdr.key {
-    //     SleepEndpoint::REQ_KEY => {
-    //         let Ok((msg, _rest)) =
-    //             postcard::take_from_bytes::<<SleepEndpoint as Endpoint>::Request>(buf)
-    //         else {
-    //             return Err(());
-    //         };
-
-    //         // Handle sleep command asynchronously.
-    //     }
-    //     PingPongEndpoint::REQ_KEY => {
-    //         let Ok((msg, _rest)) =
-    //             postcard::take_from_bytes::<<PingPongEndpoint as Endpoint>::Request>(buf)
-    //         else {
-    //             return Err(());
-    //         };
-
-    //         // Handle ping command asynchronously.
-    //     }
-    //     _ => {
-    //         return Err(());
-    //     }
-    // }
-
-    Ok(())
+    ) {
+        // Dispatch deserialization failure
+        defmt::error!("Failed to do dispatch: {}", e);
+    }
 }
 
-pub async fn run_comms(cx: app::run_comms::Context<'_>) -> ! {
+async fn unhandled_error(seq_no: u32, ethernet_tx: &mut Sender<'static, [u8; 128], 1>) {
+    let mut buf = [0; 128];
+    if let Ok(_) = postcard_rpc::headered::to_slice_keyed(
+        seq_no,
+        ERROR_KEY,
+        &FatalError::UnknownEndpoint,
+        &mut buf,
+    ) {
+        ethernet_tx.send(buf).await.ok();
+    }
+}
+
+async fn ping_response(seq_no: u32, ethernet_tx: &mut Sender<'static, [u8; 128], 1>) {
+    let mut buf = [0; 128];
+    if let Ok(_) = postcard_rpc::headered::to_slice_keyed(
+        seq_no,
+        PingPongEndpoint::RESP_KEY,
+        &Pong {},
+        &mut buf,
+    ) {
+        ethernet_tx.send(buf).await.ok();
+    }
+}
+
+async fn sleep_response(
+    seq_no: u32,
+    sleep: Sleep,
+    ethernet_tx: &mut Sender<'static, [u8; 128], 1>,
+) {
+    let mut buf = [0; 128];
+    if let Ok(_) = postcard_rpc::headered::to_slice_keyed(
+        seq_no,
+        SleepEndpoint::RESP_KEY,
+        &SleepDone { slept_for: sleep },
+        &mut buf,
+    ) {
+        ethernet_tx.send(buf).await.ok();
+    }
+}
+
+#[derive(Clone)]
+struct SortedSleepHandler {
+    sleep_until: <Systick as Monotonic>::Instant,
+    sleep: Sleep,
+    seq_no: u32,
+}
+
+impl core::cmp::PartialEq for SortedSleepHandler {
+    fn eq(&self, other: &Self) -> bool {
+        self.sleep_until.eq(&other.sleep_until)
+    }
+}
+
+impl core::cmp::Eq for SortedSleepHandler {}
+
+impl core::cmp::PartialOrd for SortedSleepHandler {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        self.sleep_until.partial_cmp(&other.sleep_until)
+    }
+}
+
+impl core::cmp::Ord for SortedSleepHandler {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.sleep_until.cmp(&other.sleep_until)
+    }
+}
+
+pub async fn handle_sleep_command(
+    cx: app::handle_sleep_command::Context<'_>,
+    mut sleep_command_receiver: Receiver<'static, (u32, Sleep), 8>,
+) {
+    let mut eth_tx = cx.shared.ethernet_tx_sender.clone();
+    let mut queue = BinaryHeap::<SortedSleepHandler, Min, 8>::new();
+
+    loop {
+        let next_wakeup = queue.peek().map(|next| next.sleep_until);
+
+        if let Some(next_wakeup) = next_wakeup {
+            if Systick::now() >= next_wakeup {
+                let next = queue.pop().unwrap();
+
+                sleep_response(next.seq_no, next.sleep, &mut eth_tx).await;
+
+                continue;
+            }
+        }
+
+        let (seq_no, sleep_command) = match next_wakeup {
+            Some(next) => match Systick::timeout_at(next, sleep_command_receiver.recv()).await {
+                Ok(o) => o.unwrap(),
+                Err(_timeout) => continue,
+            },
+            None => sleep_command_receiver.recv().await.unwrap(),
+        };
+
+        queue
+            .push(SortedSleepHandler {
+                sleep_until: Systick::now()
+                    + (sleep_command.seconds as u64).secs()
+                    + (sleep_command.micros as u64).micros(),
+                sleep: sleep_command,
+                seq_no,
+            })
+            .ok();
+    }
+}
+
+pub async fn run_comms(
+    cx: app::run_comms::Context<'_>,
+    mut ethernet_tx_receiver: Receiver<'static, [u8; 128], 1>,
+    mut sleep_command_sender: Sender<'static, (u32, Sleep), 8>,
+) -> ! {
     let stack = *cx.shared.network_stack;
 
     // Ensure DHCP configuration is up before trying connect
@@ -208,87 +250,51 @@ pub async fn run_comms(cx: app::run_comms::Context<'_>) -> ! {
 
     let mut buf = [0; 1024];
 
-    loop {
-        // let mut socket = TcpSocket::new(&stack, &mut rx_buffer, &mut tx_buffer);
-        let mut socket = UdpSocket::new(
-            stack,
-            &mut rx_meta,
-            &mut rx_buffer,
-            &mut tx_meta,
-            &mut tx_buffer,
-        );
-        socket.bind(8321).unwrap();
+    // let mut socket = TcpSocket::new(&stack, &mut rx_buffer, &mut tx_buffer);
+    let mut socket = UdpSocket::new(
+        stack,
+        &mut rx_meta,
+        &mut rx_buffer,
+        &mut tx_meta,
+        &mut tx_buffer,
+    );
+    socket.bind(8321).unwrap();
 
-        let remote_endpoint = (Ipv4Address::new(192, 168, 0, 200), 8321);
+    let remote_endpoint = (Ipv4Address::new(192, 168, 0, 200), 8321);
+    let mut ethernet_tx_sender = cx.shared.ethernet_tx_sender.clone();
 
-        loop {
-            socket.send_to(b"hello!\n", remote_endpoint).await.unwrap();
-            if let Ok(Ok((n, ep))) =
-                Systick::timeout_after(3.secs(), socket.recv_from(&mut buf)).await
-            {
-                dispatch(&buf[..n]);
-                if let Ok(s) = core::str::from_utf8(&buf[..n]) {
-                    defmt::info!("rxd from {}: {}", ep, s);
-                }
-            } else {
-                defmt::warn!("No response from {}", remote_endpoint);
+    join(
+        async {
+            // Send worker.
+            loop {
+                socket
+                    .send_to(
+                        &ethernet_tx_receiver
+                            .recv()
+                            .await
+                            .expect("We don't drop all senders"),
+                        remote_endpoint,
+                    )
+                    .await
+                    .unwrap();
             }
-        }
-
-        // defmt::info!("connecting...");
-
-        // let r = socket.connect(remote_endpoint).await;
-
-        // if let Err(e) = r {
-        //     defmt::info!("connect error: {:?}", e);
-
-        //     Systick::delay(1.secs()).await;
-
-        //     continue;
-        // }
-
-        // defmt::info!("connected!");
-
-        // // let buf = [0; 1024];
-        // let buf = b"pong";
-
-        // let mut rx = [0; 1024];
-
-        // loop {
-        //     match socket.read(&mut rx).await {
-        //         Ok(len) => {
-        //             if len == 4 {
-        //                 if &rx[0..4] == b"ping" {
-        //                     let r = socket.write_all(buf).await;
-        //                     if let Err(e) = r {
-        //                         defmt::info!("write error: {:?}", e);
-        //                         break;
-        //                     }
-        //                 } else {
-        //                     defmt::info!(
-        //                         "Did not get ping, len = {}, str = {}",
-        //                         len,
-        //                         core::str::from_utf8(&rx[0..4]).unwrap()
-        //                     );
-        //                 }
-        //             } else if len == 0 {
-        //                 defmt::info!("connection closed, len = 0");
-        //                 break;
-        //             } else {
-        //                 defmt::info!("Did not get ping, len = {}", len);
-        //             }
-        //         }
-        //         Err(e) => {
-        //             defmt::info!("read error: {:?}", e);
-        //             break;
-        //         }
-        //     }
-
-        //     let r = socket.flush().await;
-        //     if let Err(e) = r {
-        //         defmt::info!("flush error: {:?}", e);
-        //         break;
-        //     }
-        // }
-    }
+        },
+        async {
+            // Receive worker.
+            loop {
+                if let Ok((n, _ep)) = socket.recv_from(&mut buf).await {
+                    dispatch(
+                        &buf[..n],
+                        &mut ethernet_tx_sender,
+                        &mut sleep_command_sender,
+                    )
+                    .await;
+                } else {
+                    defmt::error!("UDP: incoming packet truncated");
+                }
+            }
+        },
+    )
+    .await
+    .0
 }

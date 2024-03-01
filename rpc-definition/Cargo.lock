@@ -378,8 +378,7 @@ dependencies = [
 [[package]]
 name = "postcard-rpc"
 version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cfd6e3130cb4176691b928bbec3fc6f41e2113962247e25e8c7e6af59d9948b6"
+source = "git+https://github.com/korken89/postcard-rpc.git?branch=feature/dispatcher-macro#11ebbfb4f3e8a0ce233436d60b24e9d0aff318ae"
 dependencies = [
  "heapless 0.8.0",
  "maitake-sync",
