@@ -4,6 +4,7 @@ authors = ["Emil Fresk <emil.fresk@gmail.com>"]
 name = "rpc-testing"
 edition = "2021"
 version = "0.1.0"
+autobins = false
 
 [dependencies]
 cortex-m = { version = "0.7", features = ["critical-section-single-core"] }

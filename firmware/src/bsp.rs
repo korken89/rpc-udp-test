@@ -49,6 +49,8 @@ pub fn init(c: cortex_m::Peripherals) -> NetworkStack {
     }
     let p = embassy_stm32::init(config);
 
+    // TODO: Hash UID to make MAC
+
     #[cfg(feature = "other")]
     let mac_addr = [0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
 
