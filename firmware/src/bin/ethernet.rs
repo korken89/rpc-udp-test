@@ -15,6 +15,7 @@ const BACKEND_ENDPOINT: (Ipv4Address, u16) = (Ipv4Address::new(192, 168, 0, 200)
 pub async fn run_comms(
     cx: app::run_comms::Context<'_>,
     mut ethernet_tx_receiver: Receiver<'static, Vec<u8, 128>, 1>,
+    mut ethernet_tx_sender: Sender<'static, Vec<u8, 128>, 1>,
     mut sleep_command_sender: Sender<'static, (u32, Sleep), 8>,
 ) -> ! {
     let stack = *cx.shared.network_stack;
@@ -40,8 +41,6 @@ pub async fn run_comms(
         &mut tx_buffer,
     );
     socket.bind(8321).unwrap();
-
-    let mut ethernet_tx_sender = cx.shared.ethernet_tx_sender.clone();
 
     join(
         async {

@@ -12,6 +12,7 @@ pub mod topics {
 
         topic!(TopicHeartbeat, Heartbeat, "topic/heartbeat");
 
+        #[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Schema)]
         pub struct Heartbeat {
             pub value: f32,
@@ -25,6 +26,7 @@ pub mod topics {
 
         topic!(TopicSomeData, SomeData, "topic/somedata");
 
+        #[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Schema)]
         pub struct SomeData {
             pub data: u64,
@@ -40,12 +42,14 @@ pub mod endpoints {
 
         endpoint!(SleepEndpoint, Sleep, SleepDone, "endpoint/sleep");
 
+        #[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Schema)]
         pub struct Sleep {
             pub seconds: u32,
             pub micros: u32,
         }
 
+        #[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Schema)]
         pub struct SleepDone {
             pub slept_for: Sleep,
@@ -59,9 +63,11 @@ pub mod endpoints {
 
         endpoint!(PingPongEndpoint, Ping, Pong, "endpoint/pingpong");
 
+        #[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
         #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize, Schema)]
         pub struct Ping {}
 
+        #[cfg_attr(feature = "defmt-03", derive(defmt::Format))]
         #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize, Schema)]
         pub struct Pong {}
     }

@@ -1,6 +1,5 @@
 use core::ptr::addr_of_mut;
 use core::str::FromStr;
-
 use embassy_net::{DhcpConfig, Stack, StackResources};
 use embassy_stm32::eth::{Ethernet, PacketQueue};
 use embassy_stm32::peripherals::ETH;
@@ -24,8 +23,21 @@ bind_interrupts!(struct Irqs {
 type Device = Ethernet<'static, ETH, KSZ8863SMI>;
 pub type NetworkStack = &'static Stack<Device>;
 
+#[inline(never)]
+pub fn ascon_mac(id: &[u8; 12]) -> [u8; 6] {
+    use ascon_hash::{AsconXof, ExtendableOutput, Update, XofReader};
+
+    let mut xof = AsconXof::default();
+    xof.update(id);
+    let mut reader = xof.finalize_xof();
+    let mut dst = [0u8; 6];
+    reader.read(&mut dst);
+    dst
+}
+
 #[inline(always)]
 pub fn init(c: cortex_m::Peripherals) -> NetworkStack {
+    // Update this for clock setup.
     let mut config = Config::default();
     {
         use embassy_stm32::rcc::*;
@@ -49,16 +61,22 @@ pub fn init(c: cortex_m::Peripherals) -> NetworkStack {
     }
     let p = embassy_stm32::init(config);
 
-    // TODO: Hash UID to make MAC
+    // Hash UID to make MAC
+    let mac_addr = ascon_mac(embassy_stm32::uid::uid());
 
-    #[cfg(feature = "other")]
-    let mac_addr = [0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF];
-
-    #[cfg(not(feature = "other"))]
-    let mac_addr = [0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEE];
+    defmt::info!(
+        "MAC Address: {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        mac_addr[0],
+        mac_addr[1],
+        mac_addr[2],
+        mac_addr[3],
+        mac_addr[4],
+        mac_addr[5]
+    );
 
     static mut PACKETS: PacketQueue<16, 16> = PacketQueue::new();
 
+    // NOTE: Update Pins and Phy for your board.
     let device = Ethernet::new(
         unsafe { &mut *addr_of_mut!(PACKETS) },
         p.ETH,
@@ -76,6 +94,7 @@ pub fn init(c: cortex_m::Peripherals) -> NetworkStack {
         mac_addr,
     );
 
+    // Set the hostname of the board to `rpc-<UID in hex>`.
     let config = {
         let mut c = DhcpConfig::default();
         let mut hostname = String::from_str("rpc-").unwrap();
@@ -90,7 +109,7 @@ pub fn init(c: cortex_m::Peripherals) -> NetworkStack {
     let _ = rng.fill_bytes(&mut seed);
     let seed = u64::from_le_bytes(seed);
 
-    // Init network stack
+    // Initialize the network stack.
     static STACK: StaticCell<Stack<Device>> = StaticCell::new();
     static mut RESOURCES: StackResources<4> = StackResources::new();
 
@@ -101,6 +120,7 @@ pub fn init(c: cortex_m::Peripherals) -> NetworkStack {
         seed,
     ));
 
+    // Start the Systick monotonic.
     let systick_token = rtic_monotonics::create_systick_token!();
     Systick::start(c.SYST, 168_000_000, systick_token);
     defmt::info!("init done");

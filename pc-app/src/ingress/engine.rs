@@ -223,7 +223,7 @@ async fn communication_worker(ip: IpAddr, mut packet_recv: Receiver<Vec<u8>>) {
                         }
                     }
                 } else {
-                    debug!("{ip}: Malformed packet");
+                    debug!("{ip}: Malformed packet {packet:x?}");
                 }
             }
         }

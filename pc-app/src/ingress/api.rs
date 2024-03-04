@@ -1,7 +1,7 @@
 use super::api_handle;
 use rpc_definition::{
     endpoints::{
-        pingpong::{Ping, PingPongEndpoint, Pong},
+        pingpong::{Ping, PingPongEndpoint},
         sleep::{Sleep, SleepDone, SleepEndpoint},
     },
     postcard_rpc::host_client::HostErr,
@@ -15,27 +15,40 @@ use tokio::time::timeout;
 /// Example public API endpoint.
 ///
 /// This will make the MCU server wait the requested time before answering.
-pub async fn sleep(device: IpAddr, sleep: &Sleep) -> Result<SleepDone, ApiError> {
+pub async fn sleep(device: IpAddr, sleep: Duration) -> Result<SleepDone, ApiError> {
+    let sleep_cmd = Sleep {
+        seconds: sleep.as_secs() as u32,
+        micros: sleep.subsec_micros(),
+    };
     let api = api_handle(&device).await?;
 
-    timeout_helper(api.send_resp::<SleepEndpoint>(sleep)).await
+    timeout_helper(
+        api.send_resp::<SleepEndpoint>(&sleep_cmd),
+        sleep + Duration::from_secs(1),
+    )
+    .await
 }
 
 /// Example public API endpoint.
 ///
 /// This will perform a ping/pong exchange with the device.
-pub async fn ping(device: IpAddr) -> Result<Pong, ApiError> {
+pub async fn ping(device: IpAddr) -> Result<(), ApiError> {
     let api = api_handle(&device).await?;
 
-    timeout_helper(api.send_resp::<PingPongEndpoint>(&Ping {})).await
+    timeout_helper(
+        api.send_resp::<PingPongEndpoint>(&Ping {}),
+        Duration::from_secs(1),
+    )
+    .await
+    .map(|_pong| ())
 }
 
-async fn timeout_helper<F, T>(f: F) -> Result<T, ApiError>
+async fn timeout_helper<F, T>(f: F, timeout_after: Duration) -> Result<T, ApiError>
 where
     F: Future<Output = Result<T, HostErr<FatalError>>>,
 {
     // TODO: Settable timeout, always have in public API? Seems not nice...
-    timeout(Duration::from_secs(1), f)
+    timeout(timeout_after, f)
         .await
         .map_err(|_timeout| ApiError::NoResponse)?
         .map_err(Into::into)

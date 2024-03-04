@@ -28,12 +28,14 @@ pub async fn dispatch(
             unhandled_error(hdr.seq_no, ethernet_tx, FatalError::UnknownEndpoint).await;
         },
         EP: (hdr, sleeping_req) = SleepEndpoint => {
+            defmt::trace!("Got Sleep request {}", sleeping_req);
             if sleep_command_sender.try_send((hdr.seq_no, sleeping_req)).is_err() {
                 // If all queues are full, tell the backend that we are over capacity.
                 unhandled_error(hdr.seq_no, ethernet_tx, FatalError::NotEnoughSenders).await;
             }
         },
         EP: (hdr, _pingpong_req) = PingPongEndpoint => {
+            defmt::trace!("Got Ping request");
             ping_response(hdr.seq_no, ethernet_tx).await;
         }
     ) {
@@ -92,10 +94,10 @@ async fn sleep_response(
 /// 2. Puts this in a sorted heap, with the next to execute at the top.
 /// 3. Wait for the next one to dequeue, and generate a response over Ethernet.
 pub async fn handle_sleep_command(
-    cx: app::handle_sleep_command::Context<'_>,
+    _: app::handle_sleep_command::Context<'_>,
     mut sleep_command_receiver: Receiver<'static, (u32, Sleep), 8>,
+    mut ethernet_tx_sender: Sender<'static, Vec<u8, 128>, 1>,
 ) {
-    let mut eth_tx = cx.shared.ethernet_tx_sender.clone();
     let mut queue = BinaryHeap::<SortedSleepHandler, Min, 8>::new();
 
     loop {
@@ -107,7 +109,8 @@ pub async fn handle_sleep_command(
             if Systick::now() >= next_wakeup {
                 let next = queue.pop().unwrap();
 
-                sleep_response(next.seq_no, next.sleep, &mut eth_tx).await;
+                defmt::debug!("Sleep {} finished", next.seq_no);
+                sleep_response(next.seq_no, next.sleep, &mut ethernet_tx_sender).await;
 
                 continue;
             }
@@ -132,6 +135,7 @@ pub async fn handle_sleep_command(
             None => sleep_command_receiver.recv().await.unwrap(),
         };
 
+        defmt::debug!("Sleep {} requested", seq_no);
         queue
             .push(SortedSleepHandler {
                 sleep_until: Systick::now()
