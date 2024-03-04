@@ -1,5 +1,5 @@
 use crate::app;
-use heapless::{binary_heap::Min, BinaryHeap};
+use heapless::{binary_heap::Min, BinaryHeap, Vec};
 use rpc_definition::{
     endpoints::{
         pingpong::{PingPongEndpoint, Pong},
@@ -17,7 +17,7 @@ use rtic_sync::channel::{Receiver, Sender};
 /// Main command dispatch helper, this is called on all incoming packets.
 pub async fn dispatch(
     buf: &[u8],
-    ethernet_tx: &mut Sender<'static, [u8; 128], 1>,
+    ethernet_tx: &mut Sender<'static, Vec<u8, 128>, 1>,
     sleep_command_sender: &mut Sender<'static, (u32, Sleep), 8>,
 ) {
     // Do handling of each command, some synchronously and some asynchronously.
@@ -45,25 +45,25 @@ pub async fn dispatch(
 /// Helper to generate an unhandled packet error.
 async fn unhandled_error(
     seq_no: u32,
-    ethernet_tx: &mut Sender<'static, [u8; 128], 1>,
+    ethernet_tx: &mut Sender<'static, Vec<u8, 128>, 1>,
     error: FatalError,
 ) {
     let mut buf = [0; 128];
-    if let Ok(_) = postcard_rpc::headered::to_slice_keyed(seq_no, ERROR_KEY, &error, &mut buf) {
-        ethernet_tx.send(buf).await.ok();
+    if let Ok(used) = postcard_rpc::headered::to_slice_keyed(seq_no, ERROR_KEY, &error, &mut buf) {
+        ethernet_tx.send(Vec::from_slice(used).unwrap()).await.ok();
     }
 }
 
 /// Helper to generate a response to a `Ping` call.
-async fn ping_response(seq_no: u32, ethernet_tx: &mut Sender<'static, [u8; 128], 1>) {
+async fn ping_response(seq_no: u32, ethernet_tx: &mut Sender<'static, Vec<u8, 128>, 1>) {
     let mut buf = [0; 128];
-    if let Ok(_) = postcard_rpc::headered::to_slice_keyed(
+    if let Ok(used) = postcard_rpc::headered::to_slice_keyed(
         seq_no,
         PingPongEndpoint::RESP_KEY,
         &Pong {},
         &mut buf,
     ) {
-        ethernet_tx.send(buf).await.ok();
+        ethernet_tx.send(Vec::from_slice(used).unwrap()).await.ok();
     }
 }
 
@@ -71,16 +71,16 @@ async fn ping_response(seq_no: u32, ethernet_tx: &mut Sender<'static, [u8; 128],
 async fn sleep_response(
     seq_no: u32,
     sleep: Sleep,
-    ethernet_tx: &mut Sender<'static, [u8; 128], 1>,
+    ethernet_tx: &mut Sender<'static, Vec<u8, 128>, 1>,
 ) {
     let mut buf = [0; 128];
-    if let Ok(_) = postcard_rpc::headered::to_slice_keyed(
+    if let Ok(used) = postcard_rpc::headered::to_slice_keyed(
         seq_no,
         SleepEndpoint::RESP_KEY,
         &SleepDone { slept_for: sleep },
         &mut buf,
     ) {
-        ethernet_tx.send(buf).await.ok();
+        ethernet_tx.send(Vec::from_slice(used).unwrap()).await.ok();
     }
 }
 

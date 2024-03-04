@@ -22,6 +22,7 @@ mod app {
         command_handling::handle_sleep_command,
         ethernet::{handle_stack, run_comms},
     };
+    use heapless::Vec;
     use rpc_definition::endpoints::sleep::Sleep;
     use rpc_testing::bsp::{self, NetworkStack};
     use rtic_sync::{
@@ -32,7 +33,7 @@ mod app {
     #[shared]
     struct Shared {
         network_stack: NetworkStack,
-        ethernet_tx_sender: Sender<'static, [u8; 128], 1>,
+        ethernet_tx_sender: Sender<'static, Vec<u8, 128>, 1>,
     }
 
     #[local]
@@ -44,7 +45,7 @@ mod app {
 
         let network_stack = bsp::init(cx.core);
 
-        let (ethernet_tx_sender, ethernet_tx_receiver) = make_channel!([u8; 128], 1);
+        let (ethernet_tx_sender, ethernet_tx_receiver) = make_channel!(Vec<u8, 128>, 1);
         let (sleep_request_sender, sleep_request_receiver) = make_channel!((u32, Sleep), 8);
 
         handle_stack::spawn().ok();
@@ -67,7 +68,7 @@ mod app {
         #[task(shared = [&network_stack, &ethernet_tx_sender])]
         async fn run_comms(
             _: run_comms::Context,
-            _: Receiver<'static, [u8; 128], 1>,
+            _: Receiver<'static, Vec<u8, 128>, 1>,
             _: Sender<'static, (u32, Sleep), 8>,
         );
 

@@ -4,6 +4,7 @@ use embassy_net::{
     udp::{PacketMetadata, UdpSocket},
     Ipv4Address,
 };
+use heapless::Vec;
 use rpc_definition::endpoints::sleep::Sleep;
 use rtic_sync::channel::{Receiver, Sender};
 
@@ -13,7 +14,7 @@ const BACKEND_ENDPOINT: (Ipv4Address, u16) = (Ipv4Address::new(192, 168, 0, 200)
 /// Main UDP RX/TX data pump. Also sets up the UDP socket.
 pub async fn run_comms(
     cx: app::run_comms::Context<'_>,
-    mut ethernet_tx_receiver: Receiver<'static, [u8; 128], 1>,
+    mut ethernet_tx_receiver: Receiver<'static, Vec<u8, 128>, 1>,
     mut sleep_command_sender: Sender<'static, (u32, Sleep), 8>,
 ) -> ! {
     let stack = *cx.shared.network_stack;
@@ -48,10 +49,7 @@ pub async fn run_comms(
             loop {
                 socket
                     .send_to(
-                        &ethernet_tx_receiver
-                            .recv()
-                            .await
-                            .expect("We don't drop all senders"),
+                        &ethernet_tx_receiver.recv().await.unwrap(),
                         BACKEND_ENDPOINT,
                     )
                     .await
