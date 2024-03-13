@@ -10,15 +10,15 @@
 #![no_std]
 #![allow(async_fn_in_trait)]
 
-use buffer::TlsBuffer;
-use handshake::Handshake;
-use heapless::Vec;
-use p256_cortex_m4::SecretKey;
+use buffer::DTlsBuffer;
+use handshake::ClientHandshake;
 use rand_core::{CryptoRng, RngCore};
 use session::RecordNumber;
 
-pub(crate) mod buffer;
+pub mod buffer;
 pub(crate) mod handshake;
+pub mod integers;
+pub mod record;
 pub mod session;
 
 // The TLS cake
@@ -52,39 +52,51 @@ pub trait UdpSocket {
 
 // TODO: How to select between server and client? Typestate, flag or two separate structs?
 /// A DTLS 1.3 connection.
-pub struct DTlsConnection<'a, Socket> {
+pub struct DTlsConnection<Socket> {
     /// Sender/receiver of data.
     socket: Socket,
     /// TODO: Keys for client->server and server->client. Also called "key schedule".
     crypto: (),
-    /// Backing buffer.
-    record_buf: &'a mut [u8],
 }
 
-impl<'a, Socket> DTlsConnection<'a, Socket>
+impl<Socket> DTlsConnection<Socket>
 where
-    Socket: UdpSocket + Clone + 'a,
+    Socket: UdpSocket + Clone,
 {
-    /// Open a DTLS 1.3 connection. This returns an active connection after handshake is completed.
+    /// Open a DTLS 1.3 client connection.
+    /// This returns an active connection after handshake is completed.
     ///
     /// NOTE: This does not do timeout, it's up to the caller to give up.
-    pub async fn open<Rng>(
-        mut rng: Rng,
-        buf: &'a mut [u8],
+    pub async fn open_client<Rng>(
+        rng: &mut Rng,
+        buf: &mut impl DTlsBuffer,
         socket: Socket,
     ) -> Result<Self, DTlsError<Socket>>
     where
         Rng: RngCore + CryptoRng,
     {
-        let mut buffer = TlsBuffer::new(buf);
+        // let mut handshake = ClientHandshake::new();
 
-        let mut handshake = Handshake::new();
+        // let crypto = handshake.perform(buf, &socket, rng).await?;
 
-        Ok(DTlsConnection {
-            socket,
-            crypto: (),
-            record_buf: buf,
-        })
+        let crypto = ();
+
+        Ok(DTlsConnection { socket, crypto })
+    }
+
+    /// Open a DTLS 1.3 server connection.
+    /// This returns an active connection after handshake is completed.
+    ///
+    /// NOTE: This does not do timeout, it's up to the caller to give up.
+    pub async fn open_server<Rng>(
+        rng: &mut Rng,
+        buf: &mut impl DTlsBuffer,
+        socket: Socket,
+    ) -> Result<Self, DTlsError<Socket>>
+    where
+        Rng: RngCore + CryptoRng,
+    {
+        todo!()
     }
 
     // TODO: Seems like this is the interface we want in the end.
@@ -104,7 +116,7 @@ where
 
 /// Sender half of a DTLS connection.
 pub struct DTlsSender<'a, Socket> {
-    connection: &'a DTlsConnection<'a, Socket>,
+    connection: &'a DTlsConnection<Socket>,
     record_number: RecordNumber,
 }
 
@@ -112,7 +124,7 @@ impl<'a, Socket> DTlsSender<'a, Socket> where Socket: UdpSocket + Clone + 'a {}
 
 /// Receiver half of a DTLS connection.
 pub struct DTlsReceiver<'a, Socket> {
-    connection: &'a DTlsConnection<'a, Socket>,
+    connection: &'a DTlsConnection<Socket>,
     record_number: RecordNumber,
 }
 
@@ -132,31 +144,12 @@ mod test {
 
 // ------------------------------------------------------------------------
 
-type Random = [u8; 32];
-
-const LEGACY_TLS_VERSION: u16 = 0x0303;
-
-#[derive(Debug, Copy, Clone, defmt::Format)]
-pub enum HandshakeType {
-    ClientHello = 1,
-    ServerHello = 2,
-    NewSessionTicket = 4,
-    EndOfEarlyData = 5,
-    EncryptedExtensions = 8,
-    Certificate = 11,
-    CertificateRequest = 13,
-    CertificateVerify = 15,
-    Finished = 20,
-    KeyUpdate = 24,
-    MessageHash = 254,
-}
-
 pub mod cipher_suites {
-    use chacha20poly1305::{aead::AeadMutInPlace, ChaCha20Poly1305};
-    use digest::{core_api::BlockSizeUser, Digest, FixedOutput, OutputSizeUser, Reset};
-    use generic_array::ArrayLength;
-    use sha2::Sha256;
-    use typenum::{U12, U16};
+    // use chacha20poly1305::{aead::AeadMutInPlace, ChaCha20Poly1305};
+    // use digest::{core_api::BlockSizeUser, Digest, FixedOutput, OutputSizeUser, Reset};
+    // use generic_array::ArrayLength;
+    // use sha2::Sha256;
+    // use typenum::{U12, U16};
 
     /// Represents a TLS 1.3 cipher suite
     #[derive(Copy, Clone, Debug, defmt::Format)]
@@ -185,14 +178,13 @@ pub mod cipher_suites {
         }
     }
 
-    pub trait TlsCipherSuite {
-        const CODE_POINT: u16;
-        type Cipher: AeadMutInPlace<NonceSize = Self::IvLen>;
-        type KeyLen: ArrayLength;
-        type IvLen: ArrayLength;
-
-        type Hash: Digest + Reset + Clone + OutputSizeUser + BlockSizeUser + FixedOutput;
-    }
+    // pub trait TlsCipherSuite {
+    //     const CODE_POINT: u16;
+    //     type Cipher: AeadMutInPlace<NonceSize = Self::IvLen>;
+    //     type KeyLen: ArrayLength;
+    //     type IvLen: ArrayLength;
+    //     type Hash: Digest + Reset + Clone + OutputSizeUser + BlockSizeUser + FixedOutput;
+    // }
 
     // Aes cipher
     // pub struct Aes128GcmSha256;
@@ -201,64 +193,16 @@ pub mod cipher_suites {
     //     type Cipher = Aes128Gcm;
     //     type KeyLen = U16;
     //     type IvLen = U12;
-    //
     //     type Hash = Sha256;
     // }
 
-    // Chacha chipher
-    pub struct Chacha20Poly1305Sha256;
-    impl TlsCipherSuite for Chacha20Poly1305Sha256 {
-        const CODE_POINT: u16 = CipherSuite::TlsChacha20Poly1305Sha256 as u16;
-        type Cipher = ChaCha20Poly1305;
-        type KeyLen = U16;
-        type IvLen = U12;
-
-        type Hash = Sha256;
-    }
-}
-
-pub struct ClientHello {
-    random: Random,
-    secret: SecretKey,
-}
-
-impl ClientHello {
-    pub fn new<Rng>(mut rng: Rng) -> Self
-    where
-        Rng: RngCore + CryptoRng,
-    {
-        let mut random = [0; 32];
-        rng.fill_bytes(&mut random);
-
-        let key = SecretKey::from_bytes(&random).unwrap();
-
-        rng.fill_bytes(&mut random);
-
-        Self {
-            random,
-            secret: key,
-        }
-    }
-
-    pub fn encode<const N: usize>(&self, buf: &mut Vec<u8, N>) -> Result<(), ()> {
-        let pubkey = self.secret.public_key();
-        let pubkey = pubkey.to_compressed_sec1_bytes();
-
-        buf.extend_from_slice(&LEGACY_TLS_VERSION.to_be_bytes())?;
-
-        buf.extend_from_slice(&self.random)?;
-
-        // Session ID
-        buf.push(0).map_err(|_| ())?;
-
-        // compression methods, 1 byte of 0
-        buf.push(1).map_err(|_| ())?;
-        buf.push(0).map_err(|_| ())?;
-
-        Ok(())
-    }
-}
-
-pub fn server_hello(output: &mut Vec<u8, 512>) {
-    //
+    // // Chacha chipher
+    // pub struct Chacha20Poly1305Sha256;
+    // impl TlsCipherSuite for Chacha20Poly1305Sha256 {
+    //     const CODE_POINT: u16 = CipherSuite::TlsChacha20Poly1305Sha256 as u16;
+    //     type Cipher = ChaCha20Poly1305;
+    //     type KeyLen = U16;
+    //     type IvLen = U12;
+    //     type Hash = Sha256;
+    // }
 }
