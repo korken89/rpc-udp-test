@@ -145,21 +145,22 @@ mod test {
 // ------------------------------------------------------------------------
 
 pub mod cipher_suites {
-    // use chacha20poly1305::{aead::AeadMutInPlace, ChaCha20Poly1305};
-    // use digest::{core_api::BlockSizeUser, Digest, FixedOutput, OutputSizeUser, Reset};
-    // use generic_array::ArrayLength;
-    // use sha2::Sha256;
-    // use typenum::{U12, U16};
+    use chacha20poly1305::{aead::AeadMutInPlace, ChaCha20Poly1305};
+    use digest::{core_api::BlockSizeUser, Digest, FixedOutput, OutputSizeUser, Reset};
+    use generic_array::ArrayLength;
+    use sha2::Sha256;
+    use typenum::{U12, U16};
 
     /// Represents a TLS 1.3 cipher suite
     #[derive(Copy, Clone, Debug, defmt::Format)]
     pub enum CipherSuite {
         // TlsAes128GcmSha256 = 0x1301,
         // TlsAes256GcmSha384 = 0x1302,
-        TlsChacha20Poly1305Sha256 = 0x1303,
+        // TlsChacha20Poly1305Sha256 = 0x1303,
         // TlsAes128CcmSha256 = 0x1304,
         // TlsAes128Ccm8Sha256 = 0x1305,
         // TlsPskAes128GcmSha256 = 0x00A8,
+        TlsEcdhePskWithChacha20Poly1305Sha256 = 0xCCAC,
     }
 
     impl CipherSuite {
@@ -167,24 +168,33 @@ pub mod cipher_suites {
             match num {
                 // 0x1301 => Some(Self::TlsAes128GcmSha256),
                 // 0x1302 => Some(Self::TlsAes256GcmSha384),
-                0x1303 => Some(Self::TlsChacha20Poly1305Sha256),
+                // 0x1303 => Some(Self::TlsChacha20Poly1305Sha256),
                 // 0x1304 => Some(Self::TlsAes128CcmSha256),
                 // 0x1305 => Some(Self::TlsAes128Ccm8Sha256),
                 // 0x00A8 => Some(Self::TlsPskAes128GcmSha256),
                 // 0xCC,0xAB	TLS_PSK_WITH_CHACHA20_POLY1305_SHA256
-                // 0xCC,0xAC	TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256
+                0xCCAC => Some(Self::TlsEcdhePskWithChacha20Poly1305Sha256),
                 _ => None,
             }
         }
     }
 
-    // pub trait TlsCipherSuite {
-    //     const CODE_POINT: u16;
-    //     type Cipher: AeadMutInPlace<NonceSize = Self::IvLen>;
-    //     type KeyLen: ArrayLength;
-    //     type IvLen: ArrayLength;
-    //     type Hash: Digest + Reset + Clone + OutputSizeUser + BlockSizeUser + FixedOutput;
-    // }
+    pub trait TlsCipherSuite {
+        /// The code point as defined in https://www.iana.org/assignments/tls-parameters/tls-parameters.xhtml
+        const CODE_POINT: u16;
+
+        /// Cipher to use with this cipher suite.
+        type Cipher: AeadMutInPlace<NonceSize = Self::IvLen>;
+
+        /// The length of the key.
+        type KeyLen: ArrayLength;
+
+        /// The length of the initialization vector.
+        type IvLen: ArrayLength;
+
+        /// The hash to use with this cipher suite.
+        type Hash: Digest + Reset + Clone + OutputSizeUser + BlockSizeUser + FixedOutput;
+    }
 
     // Aes cipher
     // pub struct Aes128GcmSha256;
@@ -196,13 +206,13 @@ pub mod cipher_suites {
     //     type Hash = Sha256;
     // }
 
-    // // Chacha chipher
-    // pub struct Chacha20Poly1305Sha256;
-    // impl TlsCipherSuite for Chacha20Poly1305Sha256 {
-    //     const CODE_POINT: u16 = CipherSuite::TlsChacha20Poly1305Sha256 as u16;
-    //     type Cipher = ChaCha20Poly1305;
-    //     type KeyLen = U16;
-    //     type IvLen = U12;
-    //     type Hash = Sha256;
-    // }
+    // Chacha chipher
+    pub struct TlsEcdhePskWithChacha20Poly1305Sha256;
+    impl TlsCipherSuite for TlsEcdhePskWithChacha20Poly1305Sha256 {
+        const CODE_POINT: u16 = CipherSuite::TlsEcdhePskWithChacha20Poly1305Sha256 as u16;
+        type Cipher = ChaCha20Poly1305;
+        type KeyLen = U16;
+        type IvLen = U12;
+        type Hash = Sha256;
+    }
 }

@@ -1,9 +1,9 @@
 use rand_core::{CryptoRng, RngCore};
 
 use crate::{
-    buffer::DTlsBuffer,
+    buffer::{AllocU16Handle, DTlsBuffer},
     handshake::{ClientHandshake, ClientHello},
-    integers::U48,
+    integers::{self, U48},
     DTlsError, UdpSocket,
 };
 
@@ -23,7 +23,35 @@ pub enum ClientRecord {
 }
 
 impl ClientRecord {
-    pub fn content_type(&self) -> ContentType {
+    /// Create a client hello handshake.
+    pub fn client_hello<Rng>(rng: &mut Rng) -> Self
+    where
+        Rng: RngCore + CryptoRng,
+    {
+        ClientRecord::Handshake(
+            ClientHandshake::ClientHello(ClientHello::new(rng)),
+            Encryption::Disabled,
+        )
+    }
+
+    /// Encode the record into a buffer.
+    pub fn encode<S: UdpSocket>(&self, buf: &mut impl DTlsBuffer) -> Result<(), DTlsError<S>> {
+        let header = DTlsPlaintextHeader {
+            type_: self.content_type(),
+            sequence_number: 0.into(),
+        };
+
+        // Create record header.
+        let record_length_marker = header
+            .encode(buf)
+            .map_err(|_| DTlsError::InsufficientSpace)?;
+
+        // Fill in handshake.
+
+        Ok(())
+    }
+
+    fn content_type(&self) -> ContentType {
         match self {
             ClientRecord::Handshake(_, Encryption::Disabled) => ContentType::Handshake,
             ClientRecord::ChangeCipherSpec(_, Encryption::Disabled) => {
@@ -41,41 +69,31 @@ impl ClientRecord {
             ClientRecord::ApplicationData() => ContentType::ApplicationData,
         }
     }
-
-    /// Create a client hello handshake.
-    pub fn client_hello<Rng>(rng: &mut Rng) -> Self
-    where
-        Rng: RngCore + CryptoRng,
-    {
-        ClientRecord::Handshake(
-            ClientHandshake::ClientHello(ClientHello::new(rng)),
-            Encryption::Disabled,
-        )
-    }
-
-    /// Encode the record into a buffer.
-    pub fn encode<S: UdpSocket>(
-        buf: &mut impl DTlsBuffer,
-        record: &ClientRecord,
-    ) -> Result<(), DTlsError<S>> {
-        buf.push_u8(record.content_type() as u8)
-            .map_err(|_| DTlsError::InsufficientSpace)?;
-
-        Ok(())
-    }
 }
 
-// pub struct DTlsRecord {}
-type ProtocolVersion = [u8; 2];
-const LEGACY_DTLS_VERSION: ProtocolVersion = [254, 253];
+/// Protocol version definition.
+pub type ProtocolVersion = [u8; 2];
 
-pub struct DTlsPlaintext {
+/// Value used for protocol version in DTLS 1.3.
+pub const LEGACY_DTLS_VERSION: ProtocolVersion = [254, 253];
+
+pub struct DTlsPlaintextHeader {
     type_: ContentType,
-    legacy_record_version: ProtocolVersion,
-    epoch: u16,
+    // legacy_record_version: ProtocolVersion,
+    // epoch: u16,
     sequence_number: U48,
-    length: u16,
-    // plaintext:
+    // length: u16, // we don't know this
+    // fragment: opaque[length]
+}
+
+impl DTlsPlaintextHeader {
+    fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<AllocU16Handle, ()> {
+        buf.push_u8(self.type_ as u8)?;
+        buf.extend_from_slice(&LEGACY_DTLS_VERSION)?;
+        buf.push_u16_be(0)?;
+        buf.push_u48_be(self.sequence_number)?;
+        buf.alloc_u16()
+    }
 }
 
 pub struct DTlsInnerPlaintext {}
@@ -83,7 +101,8 @@ pub struct DTlsInnerPlaintext {}
 pub struct DTlsCiphertext {}
 
 /// TLS content type. RFC 9147 - Appendix A.1
-#[derive(Debug, defmt::Format)]
+#[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ContentType {
     ChangeCipherSpec = 20,
     Alert = 21,

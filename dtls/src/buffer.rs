@@ -48,6 +48,11 @@ pub trait DTlsBuffer: Deref<Target = [u8]> + DerefMut {
         DTlsBuffer::extend_from_slice(self, &val.to_be_bytes())
     }
 
+    /// Push a u32 in big-endian.
+    fn push_u32_be(&mut self, val: u32) -> Result<(), ()> {
+        DTlsBuffer::extend_from_slice(self, &val.to_be_bytes())
+    }
+
     /// Push a u48 in big-endian.
     fn push_u48_be(&mut self, val: U48) -> Result<(), ()> {
         DTlsBuffer::extend_from_slice(self, &val.to_be_bytes())
@@ -84,6 +89,17 @@ pub trait DTlsBuffer: Deref<Target = [u8]> + DerefMut {
 
         Ok(AllocU48Handle { index })
     }
+
+    /// Allocate space for a slice for later updating.
+    fn alloc_slice(&mut self, len: usize) -> Result<AllocSliceHandle, ()> {
+        let index = DTlsBuffer::len(self);
+
+        for _ in 0..len {
+            DTlsBuffer::push_u8(self, 0)?;
+        }
+
+        Ok(AllocSliceHandle { index, len })
+    }
 }
 
 /// Handle to an allocated `u8` spot in a `DTlsBuffer`.
@@ -106,7 +122,7 @@ pub struct AllocU16Handle {
 impl AllocU16Handle {
     /// Set the value.
     pub fn set(self, buf: &mut impl DTlsBuffer, val: u16) {
-        buf[self.index..=self.index + 1].copy_from_slice(&val.to_be_bytes());
+        buf[self.index..self.index + 2].copy_from_slice(&val.to_be_bytes());
     }
 }
 
@@ -118,7 +134,7 @@ pub struct AllocU24Handle {
 impl AllocU24Handle {
     /// Set the value.
     pub fn set(self, buf: &mut impl DTlsBuffer, val: U24) {
-        buf[self.index..=self.index + 3].copy_from_slice(&val.to_be_bytes());
+        buf[self.index..self.index + 3].copy_from_slice(&val.to_be_bytes());
     }
 }
 
@@ -130,7 +146,20 @@ pub struct AllocU48Handle {
 impl AllocU48Handle {
     /// Set the value.
     pub fn set(self, buf: &mut impl DTlsBuffer, val: U48) {
-        buf[self.index..=self.index + 6].copy_from_slice(&val.to_be_bytes());
+        buf[self.index..self.index + 6].copy_from_slice(&val.to_be_bytes());
+    }
+}
+
+/// Handle to an allocated slice in a `DTlsBuffer`.
+pub struct AllocSliceHandle {
+    index: usize,
+    len: usize,
+}
+
+impl AllocSliceHandle {
+    /// Set the value.
+    pub fn set(self, buf: &mut impl DTlsBuffer, val: &[u8]) {
+        buf[self.index..self.index + self.len].copy_from_slice(val);
     }
 }
 

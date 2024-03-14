@@ -46,6 +46,12 @@ impl Add for U24 {
     }
 }
 
+impl From<u32> for U24 {
+    fn from(value: u32) -> Self {
+        Self::new(value)
+    }
+}
+
 impl Add<u32> for U24 {
     type Output = U24;
 
@@ -63,6 +69,12 @@ impl AddAssign for U24 {
 impl AddAssign<u32> for U24 {
     fn add_assign(&mut self, rhs: u32) {
         *self = *self + rhs;
+    }
+}
+
+impl From<u64> for U48 {
+    fn from(value: u64) -> Self {
+        Self::new(value)
     }
 }
 
