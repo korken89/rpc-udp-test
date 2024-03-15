@@ -111,6 +111,13 @@ impl AllocU8Handle {
     /// Set the value.
     pub fn set(self, buf: &mut impl DTlsBuffer, val: u8) {
         buf[self.index] = val;
+        core::mem::forget(self);
+    }
+}
+
+impl Drop for AllocU8Handle {
+    fn drop(&mut self) {
+        panic!("Alloc handle dropped without being used!");
     }
 }
 
@@ -123,6 +130,13 @@ impl AllocU16Handle {
     /// Set the value.
     pub fn set(self, buf: &mut impl DTlsBuffer, val: u16) {
         buf[self.index..self.index + 2].copy_from_slice(&val.to_be_bytes());
+        core::mem::forget(self);
+    }
+}
+
+impl Drop for AllocU16Handle {
+    fn drop(&mut self) {
+        panic!("Alloc handle dropped without being used!");
     }
 }
 
@@ -135,6 +149,13 @@ impl AllocU24Handle {
     /// Set the value.
     pub fn set(self, buf: &mut impl DTlsBuffer, val: U24) {
         buf[self.index..self.index + 3].copy_from_slice(&val.to_be_bytes());
+        core::mem::forget(self);
+    }
+}
+
+impl Drop for AllocU24Handle {
+    fn drop(&mut self) {
+        panic!("Alloc handle dropped without being used!");
     }
 }
 
@@ -147,6 +168,13 @@ impl AllocU48Handle {
     /// Set the value.
     pub fn set(self, buf: &mut impl DTlsBuffer, val: U48) {
         buf[self.index..self.index + 6].copy_from_slice(&val.to_be_bytes());
+        core::mem::forget(self);
+    }
+}
+
+impl Drop for AllocU48Handle {
+    fn drop(&mut self) {
+        panic!("Alloc handle dropped without being used!");
     }
 }
 
@@ -160,6 +188,13 @@ impl AllocSliceHandle {
     /// Set the value.
     pub fn set(self, buf: &mut impl DTlsBuffer, val: &[u8]) {
         buf[self.index..self.index + self.len].copy_from_slice(val);
+        core::mem::forget(self);
+    }
+}
+
+impl Drop for AllocSliceHandle {
+    fn drop(&mut self) {
+        panic!("Alloc handle dropped without being used!");
     }
 }
 

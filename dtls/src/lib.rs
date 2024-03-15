@@ -145,11 +145,12 @@ mod test {
 // ------------------------------------------------------------------------
 
 pub mod cipher_suites {
-    use chacha20poly1305::{aead::AeadMutInPlace, ChaCha20Poly1305};
+    use chacha20poly1305::{
+        aead::{AeadMutInPlace, KeySizeUser},
+        ChaCha20Poly1305,
+    };
     use digest::{core_api::BlockSizeUser, Digest, FixedOutput, OutputSizeUser, Reset};
-    use generic_array::ArrayLength;
     use sha2::Sha256;
-    use typenum::{U12, U16};
 
     /// Represents a TLS 1.3 cipher suite
     #[derive(Copy, Clone, Debug, defmt::Format)]
@@ -184,35 +185,19 @@ pub mod cipher_suites {
         const CODE_POINT: u16;
 
         /// Cipher to use with this cipher suite.
-        type Cipher: AeadMutInPlace<NonceSize = Self::IvLen>;
-
-        /// The length of the key.
-        type KeyLen: ArrayLength;
-
-        /// The length of the initialization vector.
-        type IvLen: ArrayLength;
+        type Cipher: AeadMutInPlace + KeySizeUser;
 
         /// The hash to use with this cipher suite.
         type Hash: Digest + Reset + Clone + OutputSizeUser + BlockSizeUser + FixedOutput;
     }
 
-    // Aes cipher
-    // pub struct Aes128GcmSha256;
-    // impl TlsCipherSuite for Aes128GcmSha256 {
-    //     const CODE_POINT: u16 = CipherSuite::TlsAes128GcmSha256 as u16;
-    //     type Cipher = Aes128Gcm;
-    //     type KeyLen = U16;
-    //     type IvLen = U12;
-    //     type Hash = Sha256;
-    // }
-
-    // Chacha chipher
+    /// Chacha chipher.
     pub struct TlsEcdhePskWithChacha20Poly1305Sha256;
+
     impl TlsCipherSuite for TlsEcdhePskWithChacha20Poly1305Sha256 {
         const CODE_POINT: u16 = CipherSuite::TlsEcdhePskWithChacha20Poly1305Sha256 as u16;
+
         type Cipher = ChaCha20Poly1305;
-        type KeyLen = U16;
-        type IvLen = U12;
         type Hash = Sha256;
     }
 }

@@ -1,16 +1,82 @@
-use crate::{buffer::DTlsBuffer, integers::U24, record::LEGACY_DTLS_VERSION, DTlsError, UdpSocket};
+use core::marker::PhantomData;
+
+use crate::{
+    buffer::{AllocSliceHandle, AllocU16Handle, AllocU24Handle, DTlsBuffer},
+    cipher_suites::TlsCipherSuite,
+    record::LEGACY_DTLS_VERSION,
+};
+use digest::OutputSizeUser;
+use extensions::{ClientExtensions, PskKeyExchangeModes};
+use heapless::Vec;
 use rand_core::{CryptoRng, RngCore};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
-type Random = [u8; 32];
-type CipherSuite = [u8; 2];
+use self::extensions::{KeyShareEntry, NamedGroup, OfferedPsks, PskIdentity, PskKeyExchangeMode};
 
-pub enum ClientHandshake {
-    ClientHello(ClientHello),
+pub mod extensions;
+
+/// The random bytes in a handshake.
+pub type Random = [u8; 32];
+
+pub struct ClientConfig<'a> {
+    /// List of PSK identities.
+    psk_identities: &'a [PskIdentity<'a>],
+}
+
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ClientHandshake<'a, CipherSuite> {
+    ClientHello(ClientHello<'a, CipherSuite>),
     Finished(Finished<64>), // TODO: 64 should not be hardcoded.
 }
 
-impl ClientHandshake {
+impl<'a, CipherSuite: TlsCipherSuite> ClientHandshake<'a, CipherSuite> {
+    pub fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<Option<AllocSliceHandle>, ()> {
+        // TODO: Encode client handshake.
+        let handshake_header_allocations = HandshakeHeader {
+            msg_type: self.handshake_type(),
+        }
+        .encode(buf)?;
+
+        // TODO: How to support fragmentation so we can ship this over e.g. IEEE802.15.4 radio that
+        // only has payload of 60-100 bytes?
+        // For now just assume everything goes into one `DTlsHandshake`.
+
+        let content_start = buf.len();
+
+        let binders = match self {
+            ClientHandshake::ClientHello(hello) => Some(hello.encode(buf)?),
+            ClientHandshake::Finished(finnished) => {
+                finnished.encode(buf)?;
+                None
+            }
+        };
+
+        let content_length = (content_start - buf.len()) as u32;
+
+        handshake_header_allocations
+            .length
+            .set(buf, content_length.into());
+        handshake_header_allocations.message_seq.set(buf, 1);
+        handshake_header_allocations
+            .fragment_offset
+            .set(buf, 0.into());
+        handshake_header_allocations
+            .fragment_length
+            .set(buf, content_length.into());
+
+        // TODO: Is there more to do here?
+
+        Ok(binders)
+    }
+
+    fn handshake_type(&self) -> HandshakeType {
+        match self {
+            ClientHandshake::ClientHello(_) => HandshakeType::ClientHello,
+            ClientHandshake::Finished(_) => HandshakeType::Finished,
+        }
+    }
+
     // /// Perform DTLS 1.3 handshake.
     // pub async fn perform<Socket, Rng>(
     //     &mut self,
@@ -34,33 +100,18 @@ impl ClientHandshake {
     // }
 }
 
-pub struct ServerHandshake {}
-
-impl ServerHandshake {
-    // /// Perform DTLS 1.3 handshake.
-    // pub async fn perform<Socket, Rng>(
-    //     &mut self,
-    //     buffer: &mut impl DTlsBuffer,
-    //     socket: &Socket,
-    //     rng: &mut Rng,
-    // ) -> Result<(), DTlsError<Socket>>
-    // where
-    //     Socket: UdpSocket,
-    //     Rng: RngCore + CryptoRng,
-    // {
-    //     todo!()
-    // }
-}
-
 // --------------------------------------------------------------------------
 //
 // TODO: This below should be its own files most likely. This will get large.
 //
 // --------------------------------------------------------------------------
 
+#[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(u8)]
+#[allow(unused)]
 pub enum HandshakeType {
-    ClientHello(ClientHello) = 1,
+    ClientHello = 1,
     ServerHello = 2,
     NewSessionTicket = 4,
     EndOfEarlyData = 5,
@@ -75,35 +126,66 @@ pub enum HandshakeType {
     MessageHash = 254,
 }
 
-pub struct Handshake {
-    // msg_type: HandshakeType (self.body as u8)
-    length: U24,
-    message_seq: u16,
-    fragment_offset: U24,
-    fragment_length: U24,
-    body: HandshakeType,
+/// The handshake header, defined in RFC 9147 section 5.2.
+#[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct HandshakeHeader {
+    msg_type: HandshakeType,
+    // length: U24,
+    // message_seq: u16,
+    // fragment_offset: U24,
+    // fragment_length: U24,
+    // body: HandshakeType,
 }
 
-impl Handshake {
-    pub fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<(), ()> {
-        todo!()
+/// The to-be-filled locations in the handshake header, defined in RFC 9147 section 5.2.
+pub struct HandshakeHeaderAllocations {
+    pub length: AllocU24Handle,
+    pub message_seq: AllocU16Handle,
+    pub fragment_offset: AllocU24Handle,
+    pub fragment_length: AllocU24Handle,
+}
+
+impl HandshakeHeader {
+    /// Encode the handshake header. The return contains allocated space for
+    /// `(length, fragment_length)`.
+    pub fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<HandshakeHeaderAllocations, ()> {
+        buf.push_u8(self.msg_type as u8)?;
+
+        let length = buf.alloc_u24()?;
+        let message_seq = buf.alloc_u16()?;
+        let fragment_offset = buf.alloc_u24()?;
+        let fragment_length = buf.alloc_u24()?;
+
+        Ok(HandshakeHeaderAllocations {
+            length,
+            message_seq,
+            fragment_offset,
+            fragment_length,
+        })
     }
 }
 
-pub struct ClientHello {
-    // legacy_version: ProtocolVersion,
+/// ClientHello payload in an DTlsHandshake.
+pub struct ClientHello<'a, CipherSuite> {
     random: Random,
-    // legacy_session_id: u8[0..32]
-    // legacy_cookie: u8[0..2^8-2]
-    // TODO: In the future we can support more than one.
-    // cipher_suites: [CipherSuite; 1],
-    // legacy_compression_mesthods: u8[1..2^8-1]
-    // extensions: &[Extensions]
     secret: EphemeralSecret,
+    config: &'a ClientConfig<'a>,
+    _c: PhantomData<CipherSuite>,
 }
 
-impl ClientHello {
-    pub fn new<Rng>(rng: &mut Rng) -> Self
+impl<'a, CipherSuite> core::fmt::Debug for ClientHello<'a, CipherSuite> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "ClientHello {{ random: {:02x?}, secret: <REDACTED> }}",
+            &self.random,
+        )
+    }
+}
+
+impl<'a, CipherSuite: TlsCipherSuite> ClientHello<'a, CipherSuite> {
+    pub fn new<Rng>(config: &'a ClientConfig, rng: &mut Rng) -> Self
     where
         Rng: RngCore + CryptoRng,
     {
@@ -115,280 +197,99 @@ impl ClientHello {
         Self {
             random,
             secret: key,
+            config,
+            _c: PhantomData,
         }
     }
 
-    pub fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<(), ()> {
-        let pubkey = PublicKey::from(&self.secret);
+    /// Encode a client hello payload in a Handshake. RFC 9147 section 5.3.
+    ///
+    /// Returns the allocated position for binders.
+    pub fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<AllocSliceHandle, ()> {
+        // struct {
+        //     ProtocolVersion legacy_version = { 254,253 }; // DTLSv1.2
+        //     Random random;
+        //     opaque legacy_session_id<0..32>;
+        //     opaque legacy_cookie<0..2^8-1>;                  // DTLS
+        //     CipherSuite cipher_suites<2..2^16-2>;
+        //     opaque legacy_compression_methods<1..2^8-1>;
+        //     Extension extensions<8..2^16-1>;
+        // } ClientHello;
 
+        // Legacy version.
         buf.extend_from_slice(&LEGACY_DTLS_VERSION)?;
 
+        // Random.
         buf.extend_from_slice(&self.random)?;
 
-        // Session ID
+        // Legacy Session ID.
         buf.push_u8(0)?;
 
-        // compression methods, 1 byte of 0
+        // Legacy cookie.
+        buf.push_u8(0)?;
+
+        // Cipher suites, we only support the one selected by the trait.
+        buf.push_u16_be(2)?;
+        buf.push_u16_be(CipherSuite::CODE_POINT)?;
+
+        // Compression methods, select none.
         buf.push_u8(1)?;
         buf.push_u8(0)?;
 
-        Ok(())
+        // List of extensions.
+        let content_start = buf.len();
+        let extensions_length_allocation = buf.alloc_u16()?;
+
+        ClientExtensions::PskKeyExchangeModes(PskKeyExchangeModes {
+            ke_modes: Vec::from_slice(&[PskKeyExchangeMode::PskDheKe]).unwrap(),
+        })
+        .encode(buf)?;
+
+        ClientExtensions::KeyShare(KeyShareEntry {
+            group: NamedGroup::X25519,
+            opaque: PublicKey::from(&self.secret).as_bytes(),
+        })
+        .encode(buf)?;
+
+        // IMPORTANT: Pre-shared key extension must come last.
+        let binders_allocation = ClientExtensions::PreSharedKey(OfferedPsks {
+            identities: self.config.psk_identities,
+            hash_size: <CipherSuite::Hash as OutputSizeUser>::output_size(),
+        })
+        .encode(buf)?
+        // TODO: better error?
+        .ok_or(())?;
+
+        // Fill in the length of extensions.
+        let content_length = (content_start - buf.len()) as u16;
+        extensions_length_allocation.set(buf, content_length);
+
+        Ok(binders_allocation)
     }
 }
 
+#[cfg(feature = "defmt")]
+impl defmt::Format for ClientHello {
+    fn format(&self, f: defmt::Formatter) {
+        // format the bitfields of the register as struct fields
+        defmt::write!(
+            f,
+            "ClientHello {{ random: {:02x}, secret: <REDACTED> }}",
+            &self.random,
+        )
+    }
+}
+
+/// Finished payload in an DTlsHandshake.
+#[derive(Clone, Debug, PartialOrd, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Finished<const HASH_LEN: usize> {
     pub verify: [u8; HASH_LEN],
     // pub hash: Option<[u8; 1]>,
 }
-
-pub fn server_hello(buf: &mut impl DTlsBuffer) {
-    //
-}
-
-pub mod extensions {
-    //! Extensions we probably want:
-    //!
-    //! * psk_key_exchange_modes (this looks interesting)
-    //! * key_share
-    //! * heartbeat
-    //! * pre_shared_key
-    //!
-    //! embedded-tls has these as well:
-    //!
-    //! * signature_algorithms
-    //! * supported_groups
-    //! * server_name (this looks interesting)
-    //! * supported_versions (only DTLS 1.3), not needed it turns out
-    //!
-    //! All this is defined in RFC 8446 (TLS 1.3) at Page 37.
-
-    use heapless::Vec;
-
-    use crate::buffer::{AllocSliceHandle, DTlsBuffer};
-
-    #[derive(Clone, Debug, PartialOrd, PartialEq)]
-    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-    pub enum ClientExtensions<'a> {
-        PskKeyExchangeModes(PskKeyExchangeModes),
-        KeyShare(KeyShareEntry<'a>),
-        PreSharedKey(OfferedPsks<'a>),
-        // ServerName { // Not sure we need this.
-        //     server_name: &'a str,
-        // },
-        // Heartbeat { // Not sure we need this.
-        //     mode: HeartbeatMode,
-        // },
-        // SupportedGroups {
-        //     supported_groups: Vec<NamedGroup, 16>,
-        // },
-        // SupportedVersions {
-        //     versions: ProtocolVersions,
-        // },
-        // SignatureAlgorithms {
-        //     supported_signature_algorithms: Vec<SignatureScheme, 16>,
-        // },
-        // SignatureAlgorithmsCert {
-        //     supported_signature_algorithms: Vec<SignatureScheme, 16>,
-        // },
-        // MaxFragmentLength(MaxFragmentLength),
-    }
-
-    impl<'a> ClientExtensions<'a> {
-        /// Encode a client extension.
-        /// Encode the offered pre-shared keys. Returns a handle to write the binders if needed.
-        pub fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<Option<AllocSliceHandle>, ()> {
-            // ...
-            todo!()
-        }
-
-        fn extension_type(&self) -> ExtensionType {
-            match self {
-                ClientExtensions::PskKeyExchangeModes { .. } => ExtensionType::PskKeyExchangeModes,
-                ClientExtensions::KeyShare(_) => ExtensionType::KeyShare,
-                ClientExtensions::PreSharedKey(_) => ExtensionType::PreSharedKey,
-            }
-        }
-    }
-
-    /// Pre-Shared Key Exchange Modes.
-    #[derive(Clone, Debug, PartialOrd, PartialEq)]
-    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-    pub struct PskKeyExchangeModes {
-        ke_modes: Vec<PskKeyExchangeMode, 4>,
-    }
-
-    impl PskKeyExchangeModes {
-        /// Encode a `psk_key_exchange_modes` extension.
-        pub fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<(), ()> {
-            buf.push_u8(self.ke_modes.len() as u8)?;
-            for mode in &self.ke_modes {
-                buf.push_u8(*mode as u8)?;
-            }
-
-            Ok(())
-        }
-    }
-
-    /// The `key_share` extension contains the endpoint’s cryptographic parameters.
-    #[derive(Clone, Debug, PartialOrd, PartialEq)]
-    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-    pub struct KeyShareEntry<'a> {
-        group: NamedGroup,
-        opaque: &'a [u8],
-    }
-
-    impl<'a> KeyShareEntry<'a> {
-        /// Encode a `key_share` extension.
-        pub fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<(), ()> {
-            buf.push_u16_be(2 + 2 + self.opaque.len() as u16)?;
-
-            // one key-share
-            buf.push_u16_be(self.group as u16)?;
-            buf.push_u16_be(self.opaque.len() as u16)?;
-            buf.extend_from_slice(self.opaque)
-        }
-    }
-
-    /// The pre-shared keys the client can offer to use.
-    #[derive(Clone, Debug, PartialOrd, PartialEq)]
-    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-    pub struct OfferedPsks<'a> {
-        /// List of identities that can be used. Ticket age is set to 0.
-        identities: &'a [PskIdentity<'a>],
-        /// Size of the binder hash.
-        hash_size: usize,
-    }
-
-    impl<'a> OfferedPsks<'a> {
-        /// Encode the offered pre-shared keys. Returns a handle to write the binders.
-        pub fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<AllocSliceHandle, ()> {
-            let ident_len = self
-                .identities
-                .iter()
-                .map(|ident| ident.identity.len() + 4 + 2)
-                .sum::<usize>();
-
-            // Length.
-            buf.push_u16_be(ident_len as u16)?;
-
-            // Each identity.
-            for identity in self.identities {
-                identity.encode(buf)?;
-            }
-
-            // Allocate space for binders and return it for future use.
-            let binders_len = (1 + self.hash_size) * self.identities.len();
-            buf.alloc_slice(binders_len)
-        }
-    }
-
-    /// Pre-shared key identity payload.
-    #[derive(Clone, Debug, PartialOrd, PartialEq)]
-    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-    pub struct PskIdentity<'a> {
-        /// A label for a key. For instance, a ticket (as defined in Appendix B.3.4) or a label
-        /// for a pre-shared key established externally.
-        identity: &'a [u8],
-    }
-
-    impl<'a> PskIdentity<'a> {
-        /// Encode a pre-shared key identity into the buffer.
-        pub fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<(), ()> {
-            // Encode length.
-            buf.push_u16_be(self.identity.len() as u16)?;
-
-            // Encode identity.
-            buf.extend_from_slice(self.identity)?;
-
-            // Encode ticket age.
-            buf.push_u32_be(0)
-        }
-    }
-
-    /// Heartbeat mode.
-    #[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
-    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-    pub enum HeartbeatMode {
-        PeerAllowedToSend = 1,
-        PeerNotAllowedToSend = 2,
-    }
-
-    /// Pre-Shared Key Exchange Modes (RFC 8446, 4.2.9)
-    #[repr(u8)]
-    #[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
-    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-    pub enum PskKeyExchangeMode {
-        ///  PSK-only key establishment. In this mode, the server MUST NOT supply a `key_share` value.
-        PskKe = 0,
-        /// PSK with (EC)DHE key establishment. In this mode, the client and server MUST supply
-        /// `key_share` values.
-        PskDheKe = 1,
-    }
-
-    /// Named groups which the client supports for key exchange.
-    #[repr(u16)]
-    #[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
-    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-    pub enum NamedGroup {
-        // Elliptic Curve Groups (ECDHE)
-        Secp256r1 = 0x0017,
-        Secp384r1 = 0x0018,
-        Secp521r1 = 0x0019,
-        X25519 = 0x001D,
-        X448 = 0x001E,
-
-        // Finite Field Groups (DHE)
-        Ffdhe2048 = 0x0100,
-        Ffdhe3072 = 0x0101,
-        Ffdhe4096 = 0x0102,
-        Ffdhe6144 = 0x0103,
-        Ffdhe8192 = 0x0104,
-    }
-
-    impl NamedGroup {
-        pub fn of(num: u16) -> Option<NamedGroup> {
-            match num {
-                0x0017 => Some(Self::Secp256r1),
-                0x0018 => Some(Self::Secp384r1),
-                0x0019 => Some(Self::Secp521r1),
-                0x001D => Some(Self::X25519),
-                0x001E => Some(Self::X448),
-                0x0100 => Some(Self::Ffdhe2048),
-                0x0101 => Some(Self::Ffdhe3072),
-                0x0102 => Some(Self::Ffdhe4096),
-                0x0103 => Some(Self::Ffdhe6144),
-                0x0104 => Some(Self::Ffdhe8192),
-                _ => None,
-            }
-        }
-    }
-
-    /// TLS ExtensionType Values registry.
-    #[repr(u16)]
-    #[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
-    #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-    pub enum ExtensionType {
-        ServerName = 0,
-        MaxFragmentLength = 1,
-        StatusRequest = 5,
-        SupportedGroups = 10,
-        SignatureAlgorithms = 13,
-        UseSrtp = 14,
-        Heatbeat = 15,
-        ApplicationLayerProtocolNegotiation = 16,
-        SignedCertificateTimestamp = 18,
-        ClientCertificateType = 19,
-        ServerCertificateType = 20,
-        Padding = 21,
-        PreSharedKey = 41,
-        EarlyData = 42,
-        SupportedVersions = 43,
-        Cookie = 44,
-        PskKeyExchangeModes = 45,
-        CertificateAuthorities = 47,
-        OidFilters = 48,
-        PostHandshakeAuth = 49,
-        SignatureAlgorithmsCert = 50,
-        KeyShare = 51,
+impl<const HASH_LEN: usize> Finished<HASH_LEN> {
+    /// Encode a Finished payload in an Handshake.
+    pub fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<(), ()> {
+        buf.extend_from_slice(&self.verify)
     }
 }

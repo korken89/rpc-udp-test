@@ -2,34 +2,39 @@ use rand_core::{CryptoRng, RngCore};
 
 use crate::{
     buffer::{AllocU16Handle, DTlsBuffer},
-    handshake::{ClientHandshake, ClientHello},
-    integers::{self, U48},
+    cipher_suites::TlsCipherSuite,
+    handshake::{ClientConfig, ClientHandshake, ClientHello},
+    integers::U48,
     DTlsError, UdpSocket,
 };
 
-#[derive(Copy, Clone, Debug, defmt::Format, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialOrd, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Encryption {
     Enabled,
     Disabled,
 }
 
-pub enum ClientRecord {
-    Handshake(ClientHandshake, Encryption),
-    ChangeCipherSpec(/* ChangeCipherSpec */ (), Encryption),
+/// Supported client records.
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ClientRecord<'a, CipherSuite> {
+    Handshake(ClientHandshake<'a, CipherSuite>, Encryption),
+    // ChangeCipherSpec(/* ChangeCipherSpec */ (), Encryption), // Not in DTLS 1.3
     Alert(/* Alert, */ (), Encryption),
     Heartbeat((), Encryption),
     Ack((), Encryption),
     ApplicationData(/* &'a [u8] */),
 }
 
-impl ClientRecord {
+impl<'a, CipherSuite: TlsCipherSuite> ClientRecord<'a, CipherSuite> {
     /// Create a client hello handshake.
-    pub fn client_hello<Rng>(rng: &mut Rng) -> Self
+    pub fn client_hello<Rng>(config: &'a ClientConfig<'a>, rng: &mut Rng) -> Self
     where
         Rng: RngCore + CryptoRng,
     {
         ClientRecord::Handshake(
-            ClientHandshake::ClientHello(ClientHello::new(rng)),
+            ClientHandshake::ClientHello(ClientHello::new(config, rng)),
             Encryption::Disabled,
         )
     }
@@ -42,11 +47,36 @@ impl ClientRecord {
         };
 
         // Create record header.
-        let record_length_marker = header
+        let content_start = buf.len();
+        let length_allocation = header
             .encode(buf)
             .map_err(|_| DTlsError::InsufficientSpace)?;
 
-        // Fill in handshake.
+        match self {
+            ClientRecord::Handshake(handshake, encryption) => {
+                // TODO: encryption
+                let binders_allocation = handshake
+                    .encode(buf)
+                    .map_err(|_| DTlsError::InsufficientSpace)?;
+
+                if let Some(binders) = binders_allocation {
+                    if let &ClientRecord::Handshake(
+                        ClientHandshake::ClientHello(_),
+                        Encryption::Disabled,
+                    ) = self
+                    {
+                        // TODO: Handle binders
+                    }
+                }
+            }
+            ClientRecord::Alert(_, _) => todo!(),
+            ClientRecord::Heartbeat(_, _) => todo!(),
+            ClientRecord::Ack(_, _) => todo!(),
+            ClientRecord::ApplicationData() => todo!(),
+        }
+
+        let content_length = (content_start - buf.len()) as u16;
+        length_allocation.set(buf, content_length);
 
         Ok(())
     }
@@ -54,15 +84,11 @@ impl ClientRecord {
     fn content_type(&self) -> ContentType {
         match self {
             ClientRecord::Handshake(_, Encryption::Disabled) => ContentType::Handshake,
-            ClientRecord::ChangeCipherSpec(_, Encryption::Disabled) => {
-                ContentType::ChangeCipherSpec
-            }
             ClientRecord::Alert(_, Encryption::Disabled) => ContentType::Alert,
             ClientRecord::Heartbeat(_, Encryption::Disabled) => ContentType::Heartbeat,
             ClientRecord::Ack(_, Encryption::Disabled) => ContentType::Ack,
             // All encrypted communication is marked as `ApplicationData`.
             ClientRecord::Handshake(_, Encryption::Enabled) => ContentType::ApplicationData,
-            ClientRecord::ChangeCipherSpec(_, Encryption::Enabled) => ContentType::ApplicationData,
             ClientRecord::Alert(_, Encryption::Enabled) => ContentType::ApplicationData,
             ClientRecord::Heartbeat(_, Encryption::Enabled) => ContentType::ApplicationData,
             ClientRecord::Ack(_, Encryption::Enabled) => ContentType::ApplicationData,
@@ -77,17 +103,24 @@ pub type ProtocolVersion = [u8; 2];
 /// Value used for protocol version in DTLS 1.3.
 pub const LEGACY_DTLS_VERSION: ProtocolVersion = [254, 253];
 
+/// DTls 1.3 plaintext header.
 pub struct DTlsPlaintextHeader {
     type_: ContentType,
-    // legacy_record_version: ProtocolVersion,
-    // epoch: u16,
     sequence_number: U48,
-    // length: u16, // we don't know this
-    // fragment: opaque[length]
 }
 
 impl DTlsPlaintextHeader {
-    fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<AllocU16Handle, ()> {
+    /// Encode a DTlsPlaintext header, return the allocation for the length field.
+    pub fn encode(&self, buf: &mut impl DTlsBuffer) -> Result<AllocU16Handle, ()> {
+        // DTlsPlaintext structure:
+        //
+        // type: ContentType,
+        // legacy_record_version: ProtocolVersion,
+        // epoch: u16, always 0
+        // sequence_number: U48,
+        // length: u16, // we don't know this yes, only alloc for it
+        // fragment: opaque[length]
+
         buf.push_u8(self.type_ as u8)?;
         buf.extend_from_slice(&LEGACY_DTLS_VERSION)?;
         buf.push_u16_be(0)?;
@@ -95,10 +128,6 @@ impl DTlsPlaintextHeader {
         buf.alloc_u16()
     }
 }
-
-pub struct DTlsInnerPlaintext {}
-
-pub struct DTlsCiphertext {}
 
 /// TLS content type. RFC 9147 - Appendix A.1
 #[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
