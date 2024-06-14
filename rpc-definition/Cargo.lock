@@ -396,7 +396,6 @@ checksum = "a55c51ee6c0db07e68448e336cf8ea4131a620edefebf9893e759b2d793420f8"
 dependencies = [
  "cobs",
  "const_format",
- "defmt",
  "embedded-io",
  "heapless 0.7.17",
  "postcard-derive",
@@ -416,15 +415,18 @@ dependencies = [
 
 [[package]]
 name = "postcard-rpc"
-version = "0.4.0"
-source = "git+https://github.com/korken89/postcard-rpc.git?branch=feature/dispatcher-macro#46be99426177d3b1c1ea6d816b35a1b3b27ad1df"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1167cee96c62b21cca3209c449c254480805ba23a830c4e634c30fcc6bf451af"
 dependencies = [
- "defmt",
  "heapless 0.8.0",
  "maitake-sync",
  "postcard",
  "serde",
+ "thiserror",
  "tokio",
+ "tracing",
+ "trait-variant",
 ]
 
 [[package]]
@@ -746,6 +748,17 @@ dependencies = [
  "tracing",
  "tracing-core",
  "tracing-log",
+]
+
+[[package]]
+name = "trait-variant"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70977707304198400eb4835a78f6a9f928bf41bba420deb8fdb175cd965d77a7"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.52",
 ]
 
 [[package]]
